@@ -1,0 +1,32 @@
+# Environment
+.env
+
+# SSL certificates
+ssl/*.key
+ssl/*.crt
+ssl/*.csr
+ssl/*.srl
+ssl/*.cnf
+
+# Database data (if not using volumes)
+mysql-data/
+postgresql-data/
+
+# Logs
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project files - ignore all except hello.dev.local
+www/*/
+!www/hello.dev.local/
+nginx/*.conf
+!nginx/hello.dev.local.conf

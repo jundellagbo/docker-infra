@@ -1,0 +1,155 @@
+services:
+  # Nginx - Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: infra-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx:/etc/nginx/conf.d
+      - ./www:/var/www
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - php
+      - apache
+    networks:
+      - infra-network
+    restart: unless-stopped
+
+  # Apache - Backend Web Server
+  apache:
+    build:
+      context: ./docker/apache
+      dockerfile: Dockerfile
+    container_name: infra-apache
+    ports:
+      - "8080:80"
+      - "8443:443"
+    volumes:
+      - ./www:/var/www/html
+      - ./docker/apache/vhosts:/etc/apache2/sites-enabled
+      - ./ssl:/etc/apache2/ssl:ro
+    depends_on:
+      - php
+    networks:
+      - infra-network
+    restart: unless-stopped
+
+  # PHP-FPM with Composer and WP-CLI
+  php:
+    build:
+      context: ./docker/php
+      dockerfile: Dockerfile
+      args:
+        PHP_VERSION: ${PHP_VERSION:-8.3}
+    container_name: infra-php
+    volumes:
+      - ./www:/var/www
+    networks:
+      - infra-network
+    restart: unless-stopped
+
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: infra-mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: artisan7530
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./mysql:/docker-entrypoint-initdb.d
+    networks:
+      - infra-network
+    restart: unless-stopped
+
+  # PostgreSQL Database
+  postgresql:
+    image: postgres:16-alpine
+    container_name: infra-postgresql
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: artisan7530
+      POSTGRES_DB: postgres
+    volumes:
+      - postgresql-data:/var/lib/postgresql/data
+      - ./postgresql:/docker-entrypoint-initdb.d
+    networks:
+      - infra-network
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: infra-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - infra-network
+    restart: unless-stopped
+
+  # Adminer - Database Management
+  adminer:
+    image: adminer:latest
+    container_name: infra-adminer
+    ports:
+      - "8081:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: mysql
+      ADMINER_DESIGN: nette
+    depends_on:
+      - mysql
+      - postgresql
+    networks:
+      - infra-network
+    restart: unless-stopped
+
+  # MailHog - Email Testing
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: infra-mailhog
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+    networks:
+      - infra-network
+    restart: unless-stopped
+
+  # Nginx Config Watcher - Auto-sync configs
+  config-watcher:
+    image: alpine:latest
+    container_name: infra-config-watcher
+    volumes:
+      - ./nginx:/watch/nginx
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: >
+      sh -c "
+        apk add --no-cache inotify-tools docker-cli &&
+        echo 'Starting nginx config watcher...' &&
+        while true; do
+          inotifywait -r -e modify,create,delete,move /watch/nginx 2>/dev/null &&
+          echo 'Config change detected, reloading nginx...' &&
+          docker exec infra-nginx nginx -s reload 2>/dev/null || true
+        done
+      "
+    depends_on:
+      - nginx
+    networks:
+      - infra-network
+    restart: unless-stopped
+
+networks:
+  infra-network:
+    driver: bridge
+
+volumes:
+  mysql-data:
+  postgresql-data:
+  redis-data:

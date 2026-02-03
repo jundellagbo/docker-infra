@@ -1,0 +1,38 @@
+# Git shortcuts
+
+# Commit
+alias gcom='git commit -m'
+alias gamend='git commit --amend'
+alias gundo='git reset --soft HEAD~1'
+
+# Status / Diff
+alias gst='git status -sb'
+alias gdf='git diff'
+alias gdfc='git diff --cached'
+
+# Branching
+alias gbr='git branch'
+alias gch='git fetch && git checkout'
+alias gnb='function _gnb(){ git checkout -b "$1" && git push -u origin "$1"; }; _gnb'
+alias gdel='git branch -d'
+
+# Pull / Push
+alias gpull='git pull origin'
+alias gpush='git push -u origin'
+alias gpf='git push --force-with-lease'
+
+# Merge / Rebase
+alias gmg='git merge'
+alias grb='git rebase'
+alias grbi='git rebase -i'
+
+# Logs
+alias glg='git log --oneline --graph --decorate --all'
+alias glast='git log -1 HEAD'
+alias gtree='git log --graph --pretty=format:"%C(auto)%h%d %s %Cgreen(%cr) %C(bold blue)<%an>" --abbrev-commit --date=relative'
+
+# Cleanup
+alias gwipe='git reset --hard && git clean -fd'
+
+# Who wrote what
+alias gwho='git shortlog -s --'
