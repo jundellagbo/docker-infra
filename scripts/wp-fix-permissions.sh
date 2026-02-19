@@ -59,7 +59,7 @@ if ! docker inspect "$CONTAINER" --format '{{.State.Running}}' 2>/dev/null | gre
     exit 1
 fi
 
-# Fix permissions for a single WordPress project
+# Fix permissions for a single project (WordPress or not)
 fix_project() {
     local project_path="$1"
     local project_name
@@ -70,39 +70,57 @@ fix_project() {
     echo -e "${BLUE}  Fixing: ${project_name}${NC}"
     echo -e "${BLUE}────────────────────────────────────────${NC}"
 
-    # Determine the WP root (could be project_path itself or project_path/public)
+    # Determine the web-accessible root (public/ subdirectory if present)
+    local public_root=""
+    if docker exec "$CONTAINER" test -d "${project_path}/public" 2>/dev/null; then
+        public_root="${project_path}/public"
+    else
+        public_root="$project_path"
+    fi
+
+    # Determine if this is a WordPress project
     local wp_root=""
     if docker exec "$CONTAINER" test -f "${project_path}/wp-includes/version.php" 2>/dev/null; then
         wp_root="$project_path"
     elif docker exec "$CONTAINER" test -f "${project_path}/public/wp-includes/version.php" 2>/dev/null; then
         wp_root="${project_path}/public"
-    else
-        print_warning "Skipping ${project_name} — not a WordPress project"
-        return 0
     fi
 
-    print_info "WordPress root: ${wp_root}"
+    if [ -n "$wp_root" ]; then
+        print_info "WordPress root: ${wp_root}"
+    else
+        print_info "Web root: ${public_root} (not a WordPress project — fixing base permissions)"
+    fi
 
     # ── 1. Set ownership: www:www-data (uid 1000:gid 82) ──
     print_info "Setting ownership to www:www-data..."
-    docker exec -u root "$CONTAINER" chown -R www:www-data "$wp_root"
-
-    # Also fix the project directory and wp-config.php above public/ if applicable
-    if [ "$wp_root" != "$project_path" ]; then
-        docker exec -u root "$CONTAINER" chown www:www-data "$project_path"
-        if docker exec "$CONTAINER" test -f "${project_path}/wp-config.php" 2>/dev/null; then
-            docker exec -u root "$CONTAINER" chown www:www-data "${project_path}/wp-config.php"
-        fi
-    fi
+    docker exec -u root "$CONTAINER" chown -R www:www-data "$project_path"
     print_success "Ownership set"
 
     # ── 2. Base permissions: 755 dirs, 644 files ──
     print_info "Setting base permissions (dirs: 755, files: 644)..."
-    docker exec -u root "$CONTAINER" find "$wp_root" -type d -exec chmod 755 {} +
-    docker exec -u root "$CONTAINER" find "$wp_root" -type f -exec chmod 644 {} +
+    docker exec -u root "$CONTAINER" find "$project_path" -type d -exec chmod 755 {} +
+    docker exec -u root "$CONTAINER" find "$project_path" -type f -exec chmod 644 {} +
     print_success "Base permissions set"
 
-    # ── 3. wp-content writable: 775 dirs, 664 files ──
+    # ── 3. Make project root and public dir group-writable ──
+    # PHP-FPM runs as www-data (gid 82). The project root and public directory
+    # must be group-writable so PHP/WP-CLI can create files (e.g. .htaccess,
+    # wp-config.php, wp core download, etc.).
+    print_info "Making project root and web root group-writable (775)..."
+    docker exec -u root "$CONTAINER" chmod 775 "$project_path"
+    if [ "$public_root" != "$project_path" ]; then
+        docker exec -u root "$CONTAINER" chmod 775 "$public_root"
+    fi
+    print_success "Root directories are group-writable"
+
+    # Stop here for non-WordPress projects
+    if [ -z "$wp_root" ]; then
+        print_success "Done: ${project_name}"
+        return 0
+    fi
+
+    # ── 4. wp-content writable: 775 dirs, 664 files ──
     if docker exec "$CONTAINER" test -d "${wp_root}/wp-content" 2>/dev/null; then
         print_info "Setting wp-content writable permissions (dirs: 775, files: 664)..."
         docker exec -u root "$CONTAINER" find "${wp_root}/wp-content" -type d -exec chmod 775 {} +
@@ -110,7 +128,7 @@ fix_project() {
         print_success "wp-content permissions set"
     fi
 
-    # ── 4. Secure wp-config.php (640) ──
+    # ── 5. Secure wp-config.php (640) ──
     for config_path in "${wp_root}/wp-config.php" "${project_path}/wp-config.php"; do
         if docker exec "$CONTAINER" test -f "$config_path" 2>/dev/null; then
             print_info "Securing wp-config.php (640)..."
@@ -120,7 +138,7 @@ fix_project() {
         fi
     done
 
-    # ── 5. Ensure FS_METHOD is set to 'direct' in wp-config.php ──
+    # ── 6. Ensure FS_METHOD is set to 'direct' in wp-config.php ──
     # Without this, WordPress detects that file owner (www) ≠ PHP process user
     # (www-data) and asks for FTP credentials when installing plugins/themes.
     for config_path in "${project_path}/wp-config.php" "${wp_root}/wp-config.php"; do
@@ -129,7 +147,6 @@ fix_project() {
                 print_info "Adding FS_METHOD 'direct' to wp-config.php..."
                 docker exec -u root "$CONTAINER" sh -c \
                     "sed -i \"/That's all, stop editing/i define('FS_METHOD', 'direct');\" '$config_path'"
-                # Verify it was added
                 if docker exec "$CONTAINER" grep -q "FS_METHOD" "$config_path" 2>/dev/null; then
                     print_success "FS_METHOD set to 'direct'"
                 else
@@ -143,7 +160,7 @@ fix_project() {
         fi
     done
 
-    # ── 6. Ensure uploads directory exists ──
+    # ── 7. Ensure uploads directory exists ──
     if ! docker exec "$CONTAINER" test -d "${wp_root}/wp-content/uploads" 2>/dev/null; then
         print_info "Creating wp-content/uploads..."
         docker exec -u root "$CONTAINER" mkdir -p "${wp_root}/wp-content/uploads"
