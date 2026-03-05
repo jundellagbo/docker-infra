@@ -36,37 +36,25 @@ RUN apk add --no-cache \
     openssl-dev \
     linux-headers
 
+# Already built into php:8.x-fpm-alpine:
+#   curl, dom, fileinfo, filter, iconv, mbstring, xml, sodium, pdo
+
 # Configure and install PHP extensions for WordPress
 RUN docker-php-ext-configure gd \
         --with-freetype \
         --with-jpeg \
         --with-webp \
     && docker-php-ext-install -j$(nproc) \
-        # WordPress Required
         mysqli \
-        # WordPress Strongly Recommended
-        curl \
-        dom \
         exif \
-        fileinfo \
         intl \
-        mbstring \
-        xml \
         zip \
-        # WordPress Caching
         opcache \
-        # WordPress Recommended
         bcmath \
-        filter \
         gd \
-        iconv \
-        sodium \
-        # Database
-        pdo \
         pdo_mysql \
         pdo_pgsql \
         pgsql \
-        # Additional useful extensions
         soap \
         pcntl \
         sockets \
