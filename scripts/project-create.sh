@@ -122,6 +122,7 @@ server {
     listen 80;
     listen [::]:80;
     server_name ${FULL_DOMAIN};
+    client_max_body_size 100M;
 
     root /var/www/${FULL_DOMAIN}/public;
     index index.html index.htm index.php;
@@ -147,6 +148,7 @@ server {
     listen 443 ssl;
     listen [::]:443 ssl;
     server_name ${FULL_DOMAIN};
+    client_max_body_size 100M;
 
     ssl_certificate /etc/nginx/ssl/wildcard.crt;
     ssl_certificate_key /etc/nginx/ssl/wildcard.key;
