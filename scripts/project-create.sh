@@ -117,13 +117,29 @@ print_success "Created index.php"
 # Create nginx configuration
 print_info "Creating nginx configuration..."
 cat > "$NGINX_CONF" << EOF
-# ${FULL_DOMAIN} - redirect HTTP to HTTPS
+# ${FULL_DOMAIN} virtual host
 server {
     listen 80;
     listen [::]:80;
     server_name ${FULL_DOMAIN};
 
-    return 301 https://\$host\$request_uri;
+    root /var/www/${FULL_DOMAIN}/public;
+    index index.html index.htm index.php;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    location ~ \.php\$ {
+        fastcgi_pass php:9000;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
+        fastcgi_index index.php;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
 }
 
 # ${FULL_DOMAIN} HTTPS
@@ -146,8 +162,6 @@ server {
     location ~ \.php\$ {
         fastcgi_pass php:9000;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        fastcgi_param HTTPS on;
-        fastcgi_param HTTP_X_FORWARDED_PROTO https;
         include fastcgi_params;
         fastcgi_index index.php;
     }
@@ -181,6 +195,6 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Project Created Successfully!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-echo "Project URL: https://${FULL_DOMAIN}"
+echo "Project URL: http://${FULL_DOMAIN}"
 echo "Document root: ${WWW_DIR}/public"
 echo ""
