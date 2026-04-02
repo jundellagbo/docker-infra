@@ -205,5 +205,8 @@ networks:
 
 volumes:
   mysql-data:
+    name: infra_mysql-data
   postgresql-data:
+    name: infra_postgresql-data
   redis-data:
+    name: infra_redis-data
