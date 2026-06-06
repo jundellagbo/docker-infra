@@ -39,9 +39,26 @@ alias gwho='git shortlog -s --'
 
 # Git branch in PS1
 git_branch() {
-  local branch
-  branch=$(git branch --show-current 2>/dev/null)
-  [ -n "$branch" ] && echo " ($branch)"
+  local branch status=""
+
+  branch=$(git branch --show-current 2>/dev/null) || return
+
+  # Staged changes
+  git diff --cached --quiet 2>/dev/null || status+="+"
+
+  # Unstaged changes
+  git diff --quiet 2>/dev/null || status+="*"
+
+  # Untracked files
+  [ -n "$(git ls-files --others --exclude-standard 2>/dev/null)" ] && status+="?"
+
+  # Merge conflicts
+  [ -n "$(git diff --name-only --diff-filter=U 2>/dev/null)" ] && status+="x"
+
+  # Clean repo
+  [ -z "$status" ] && status="✓"
+
+  echo " ($branch:$status)"
 }
 
 PS1='\[\e[32m\]\u@\h\[\e[0m\]:\[\e[34m\]\w\[\e[33m\]$(git_branch)\[\e[0m\]\$ '
