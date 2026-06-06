@@ -5,6 +5,8 @@ A complete local development stack with Nginx, Apache, PHP, MySQL, PostgreSQL, R
 ## Features
 
 - **Nginx** - Reverse proxy with wildcard SSL for `*.dev.local` (ports 80/443)
+- **Automatic virtual hosts** - `<name>.dev.local` maps to `www/<name>.dev.local/public`
+- **Wildcard Docker DNS** - All `*.dev.local` names resolve to Nginx inside the stack
 - **Apache** - Backend web server (ports 8080/8443)
 - **PHP 7.4-8.4** - FPM with Composer, WP-CLI, and all WordPress extensions (version switchable)
 - **MySQL 8.0** - Database server (port 3306)
@@ -36,13 +38,25 @@ This generates a wildcard SSL certificate for `*.dev.local` that works for any s
 
 ### 3. Start Services
 
+Optionally change the host directories in `.env` before starting:
+
+```dotenv
+WWW_PATH=./www
+NGINX_PATH=./nginx
+```
+
+Both relative paths (resolved from the repository directory) and absolute paths are supported.
+
 ```bash
 docker compose up -d
 ```
 
-### 4. Add Host Entries
+### 4. Configure Host DNS
 
-Add your projects to the Windows hosts file (`C:\Windows\System32\drivers\etc\hosts`):
+Every container in this Compose stack resolves `*.dev.local` automatically. Host
+applications such as browsers still need host-level DNS configuration. Since hosts
+files do not support wildcards, individual entries can be used as a fallback in
+`C:\Windows\System32\drivers\etc\hosts`:
 
 ```
 127.0.0.1 dev.local
@@ -52,16 +66,10 @@ Add your projects to the Windows hosts file (`C:\Windows\System32\drivers\etc\ho
 
 ### 5. Create a Project
 
-Create a project folder and Nginx config manually:
+Create a project with the helper:
 
 ```bash
-# Create project directory
-mkdir -p www/mysite/public
-echo '<?php phpinfo();' > www/mysite/public/index.php
-
-# Create Nginx config (copy from www/default as template)
-cp nginx/default.conf nginx/mysite.conf
-# Edit nginx/mysite.conf to set server_name and root path
+./scripts/project-create.sh mysite
 ```
 
 Visit https://mysite.dev.local
@@ -168,8 +176,8 @@ infra/
 ├── docker/
 │   ├── php/               # PHP Dockerfile
 │   └── apache/            # Apache Dockerfile & vhosts
-├── nginx/                 # Nginx virtual host configs (auto-synced)
-├── www/                   # Web projects
+├── nginx/                 # Default NGINX_PATH; Nginx virtual host configs
+├── www/                   # Default WWW_PATH; web projects
 │   ├── default/           # Default landing page
 │   └── <project>/         # Your projects
 ├── ssl/                   # SSL certificates (wildcard for *.dev.local)
@@ -202,65 +210,18 @@ The SSL certificate covers:
 Import-Certificate -FilePath "\\wsl$\Ubuntu\home\jundell\infra\ssl\ca.crt" -CertStoreLocation Cert:\LocalMachine\Root
 ```
 
-## Creating a New Project
+## Automatic Virtual Hosts
 
-1. Create the project directory:
-   ```bash
-   mkdir -p www/myproject/public
-   ```
+Any directory named `www/<name>.dev.local/public` is served automatically at
+`https://<name>.dev.local`. No Nginx config or reload is required:
 
-2. Create an Nginx config file `nginx/myproject.conf`:
-   ```nginx
-   server {
-       listen 80;
-       listen [::]:80;
-       server_name myproject.dev.local;
-       
-       root /var/www/myproject/public;
-       index index.php index.html;
-       
-       location / {
-           try_files $uri $uri/ /index.php?$query_string;
-       }
-       
-       location ~ \.php$ {
-           fastcgi_pass php:9000;
-           fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
-           include fastcgi_params;
-       }
-   }
+```bash
+./scripts/project-create.sh myproject
+```
 
-   server {
-       listen 443 ssl http2;
-       listen [::]:443 ssl http2;
-       server_name myproject.dev.local;
-       
-       ssl_certificate /etc/nginx/ssl/wildcard.crt;
-       ssl_certificate_key /etc/nginx/ssl/wildcard.key;
-       
-       root /var/www/myproject/public;
-       index index.php index.html;
-       
-       location / {
-           try_files $uri $uri/ /index.php?$query_string;
-       }
-       
-       location ~ \.php$ {
-           fastcgi_pass php:9000;
-           fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
-           include fastcgi_params;
-       }
-   }
-   ```
-
-3. Add to Windows hosts file (`C:\Windows\System32\drivers\etc\hosts`):
-   ```
-   127.0.0.1 myproject.dev.local
-   ```
-
-4. Nginx reloads automatically when config changes (via config-watcher)
-
-5. Visit https://myproject.dev.local
+Files in `NGINX_PATH` can still define explicit `server_name` virtual hosts when a
+project needs custom routing. Exact server names take precedence over the automatic
+wildcard virtual host.
 
 ## Nginx Config Auto-Sync
 

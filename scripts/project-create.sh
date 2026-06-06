@@ -8,6 +8,26 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INFRA_DIR="$(dirname "$SCRIPT_DIR")"
 DOMAIN_SUFFIX="dev.local"
 
+read_env_value() {
+    local key="$1"
+    sed -n "s/^${key}=//p" "${INFRA_DIR}/.env" | tail -n 1
+}
+
+if [ -f "${INFRA_DIR}/.env" ]; then
+    WWW_PATH="${WWW_PATH:-$(read_env_value WWW_PATH)}"
+    NGINX_PATH="${NGINX_PATH:-$(read_env_value NGINX_PATH)}"
+fi
+
+resolve_host_path() {
+    case "$1" in
+        /*) printf '%s\n' "$1" ;;
+        *) printf '%s\n' "${INFRA_DIR}/${1#./}" ;;
+    esac
+}
+
+WWW_PATH="$(resolve_host_path "${WWW_PATH:-./www}")"
+NGINX_PATH="$(resolve_host_path "${NGINX_PATH:-./nginx}")"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -37,8 +57,8 @@ fi
 
 PROJECT_NAME="$1"
 FULL_DOMAIN="${PROJECT_NAME}.${DOMAIN_SUFFIX}"
-NGINX_CONF="${INFRA_DIR}/nginx/${FULL_DOMAIN}.conf"
-WWW_DIR="${INFRA_DIR}/www/${FULL_DOMAIN}"
+NGINX_CONF="${NGINX_PATH}/${FULL_DOMAIN}.conf"
+WWW_DIR="${WWW_PATH}/${FULL_DOMAIN}"
 
 echo ""
 echo -e "${BLUE}========================================${NC}"

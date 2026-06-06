@@ -36,3 +36,12 @@ alias gwipe='git reset --hard && git clean -fd'
 
 # Who wrote what
 alias gwho='git shortlog -s --'
+
+# Git branch in PS1
+git_branch() {
+  local branch
+  branch=$(git branch --show-current 2>/dev/null)
+  [ -n "$branch" ] && echo " ($branch)"
+}
+
+PS1='\[\e[32m\]\u@\h\[\e[0m\]:\[\e[34m\]\w\[\e[33m\]$(git_branch)\[\e[0m\]\$ '
