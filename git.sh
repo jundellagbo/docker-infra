@@ -62,3 +62,6 @@ git_branch() {
 }
 
 PS1='\[\e[32m\]\u@\h\[\e[0m\]:\[\e[34m\]\w\[\e[33m\]$(git_branch)\[\e[0m\]\$ '
+
+bind '"\e[A": history-search-backward'
+bind '"\e[B": history-search-forward'
