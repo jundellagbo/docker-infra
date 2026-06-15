@@ -88,7 +88,7 @@ services:
     volumes:
       - ${WWW_PATH:-./www}:/var/www
     healthcheck:
-      test: ["CMD-SHELL", "php -r 'exit(0);'"]
+      test: ["CMD-SHELL", "php -r '$$socket = @fsockopen(\"127.0.0.1\", 9000); exit($$socket ? 0 : 1);'"]
       interval: 10s
       timeout: 5s
       retries: 3
