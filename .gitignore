@@ -30,3 +30,4 @@ nginx
 ssl
 !docker/nginx/
 !docker/nginx/*.conf
+docker/*/.user.ini

@@ -84,14 +84,8 @@ RUN curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli
     && chmod +x wp-cli.phar \
     && mv wp-cli.phar /usr/local/bin/wp
 
-# Configure PHP
-RUN echo "memory_limit=512M" > /usr/local/etc/php/conf.d/memory-limit.ini \
-    && echo "upload_max_filesize=100M" >> /usr/local/etc/php/conf.d/uploads.ini \
-    && echo "post_max_size=100M" >> /usr/local/etc/php/conf.d/uploads.ini \
-    && echo "max_execution_time=600" >> /usr/local/etc/php/conf.d/execution.ini
-
-# Configure sendmail to use MailHog
-RUN echo "sendmail_path = /usr/sbin/sendmail -S mailhog:1025" > /usr/local/etc/php/conf.d/mailhog.ini
+# Configure PHP from a source-controlled override file
+COPY .user.ini /usr/local/etc/php/conf.d/zz-user.ini
 
 # Create www-data user with correct permissions
 RUN addgroup -g 1000 -S www && adduser -u 1000 -S www -G www

@@ -105,6 +105,7 @@ docker compose exec postgresql psql -U root -d postgres
 
 - MySQL: http://localhost:8081 (Server: `mysql`, User: `root`, Password: `artisan7530`)
 - PostgreSQL: http://localhost:8081?driver=pgsql (Server: `postgresql`, User: `root`, Password: `artisan7530`)
+- SQL imports support files up to 128 MB. After changing `docker/adminer/.user.ini`, recreate Adminer with `docker compose up -d --force-recreate adminer`.
 
 ## Switching PHP Version
 
