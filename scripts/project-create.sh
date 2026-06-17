@@ -37,6 +37,29 @@ print_error() { echo -e "${RED}✗ $1${NC}"; }
 print_info() { echo -e "${BLUE}→ $1${NC}"; }
 print_warning() { echo -e "${YELLOW}! $1${NC}"; }
 
+ensure_hosts_entry() {
+    local domain="$1"
+    local entry="127.0.0.1 ${domain}"
+
+    if grep -qF "$domain" /etc/hosts 2>/dev/null; then
+        print_success "Hosts entry already exists"
+        return
+    fi
+
+    print_info "Adding hosts entry for ${domain}..."
+    if [ -w /etc/hosts ]; then
+        printf '%s\n' "$entry" >> /etc/hosts
+        print_success "Added hosts entry"
+    elif command -v sudo >/dev/null 2>&1 && [ -t 0 ]; then
+        printf '%s\n' "$entry" | sudo tee -a /etc/hosts >/dev/null && \
+            print_success "Added hosts entry" || \
+            print_warning "Could not add hosts entry"
+    else
+        print_warning "Add to /etc/hosts (requires sudo):"
+        echo "    echo '${entry}' | sudo tee -a /etc/hosts"
+    fi
+}
+
 usage() {
     echo "Usage: $0 <project-name>"
     echo ""
@@ -126,14 +149,7 @@ EOF
 print_success "Created index.php"
 
 print_success "Automatic nginx vhost: ${FULL_DOMAIN}"
-
-# Check if hosts entry exists
-if grep -q "${FULL_DOMAIN}" /etc/hosts 2>/dev/null; then
-    print_success "Hosts entry already exists"
-else
-    print_warning "Add to /etc/hosts (requires sudo):"
-    echo "    echo '127.0.0.1 ${FULL_DOMAIN}' | sudo tee -a /etc/hosts"
-fi
+ensure_hosts_entry "${FULL_DOMAIN}"
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
