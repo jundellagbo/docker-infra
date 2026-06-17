@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Create a new project with nginx vhost and www directory
+# Create a new project served by the automatic nginx vhost
 
 set -e
 
@@ -15,7 +15,6 @@ read_env_value() {
 
 if [ -f "${INFRA_DIR}/.env" ]; then
     WWW_PATH="${WWW_PATH:-$(read_env_value WWW_PATH)}"
-    NGINX_PATH="${NGINX_PATH:-$(read_env_value NGINX_PATH)}"
 fi
 
 resolve_host_path() {
@@ -26,7 +25,6 @@ resolve_host_path() {
 }
 
 WWW_PATH="$(resolve_host_path "${WWW_PATH:-./www}")"
-NGINX_PATH="$(resolve_host_path "${NGINX_PATH:-./nginx}")"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -42,7 +40,7 @@ print_warning() { echo -e "${YELLOW}! $1${NC}"; }
 usage() {
     echo "Usage: $0 <project-name>"
     echo ""
-    echo "Creates a new project with nginx configuration and www directory."
+    echo "Creates a new project directory served by the automatic nginx vhost."
     echo ""
     echo "Example:"
     echo "  $0 myapp"
@@ -57,7 +55,6 @@ fi
 
 PROJECT_NAME="$1"
 FULL_DOMAIN="${PROJECT_NAME}.${DOMAIN_SUFFIX}"
-NGINX_CONF="${NGINX_PATH}/${FULL_DOMAIN}.conf"
 WWW_DIR="${WWW_PATH}/${FULL_DOMAIN}"
 
 echo ""
@@ -65,12 +62,6 @@ echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}  Creating Project: ${FULL_DOMAIN}${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
-
-# Check if project already exists
-if [ -f "$NGINX_CONF" ]; then
-    print_error "Project already exists: $NGINX_CONF"
-    exit 1
-fi
 
 if [ -d "$WWW_DIR" ]; then
     print_error "Directory already exists: $WWW_DIR"
@@ -134,66 +125,7 @@ $projectName = basename(dirname(__DIR__));
 EOF
 print_success "Created index.php"
 
-# Create nginx configuration
-print_info "Creating nginx configuration..."
-cat > "$NGINX_CONF" << EOF
-# ${FULL_DOMAIN} virtual host
-server {
-    listen 80;
-    listen [::]:80;
-    server_name ${FULL_DOMAIN};
-    client_max_body_size 100M;
-
-    root /var/www/${FULL_DOMAIN}/public;
-    index index.html index.htm index.php;
-
-    location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
-    }
-
-    location ~ \.php\$ {
-        fastcgi_pass php:9000;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        include fastcgi_params;
-        fastcgi_index index.php;
-    }
-
-    location ~ /\.ht {
-        deny all;
-    }
-}
-
-# ${FULL_DOMAIN} HTTPS
-server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    server_name ${FULL_DOMAIN};
-    client_max_body_size 100M;
-
-    ssl_certificate /etc/nginx/ssl/wildcard.crt;
-    ssl_certificate_key /etc/nginx/ssl/wildcard.key;
-    ssl_protocols TLSv1.2 TLSv1.3;
-
-    root /var/www/${FULL_DOMAIN}/public;
-    index index.html index.htm index.php;
-
-    location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
-    }
-
-    location ~ \.php\$ {
-        fastcgi_pass php:9000;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        include fastcgi_params;
-        fastcgi_index index.php;
-    }
-
-    location ~ /\.ht {
-        deny all;
-    }
-}
-EOF
-print_success "Created ${NGINX_CONF}"
+print_success "Automatic nginx vhost: ${FULL_DOMAIN}"
 
 # Check if hosts entry exists
 if grep -q "${FULL_DOMAIN}" /etc/hosts 2>/dev/null; then
@@ -201,15 +133,6 @@ if grep -q "${FULL_DOMAIN}" /etc/hosts 2>/dev/null; then
 else
     print_warning "Add to /etc/hosts (requires sudo):"
     echo "    echo '127.0.0.1 ${FULL_DOMAIN}' | sudo tee -a /etc/hosts"
-fi
-
-# Reload nginx if running
-print_info "Reloading nginx..."
-if docker exec infra-nginx nginx -t 2>/dev/null; then
-    docker exec infra-nginx nginx -s reload 2>/dev/null && print_success "Nginx reloaded" || print_warning "Could not reload nginx"
-else
-    print_error "Nginx configuration test failed"
-    exit 1
 fi
 
 echo ""
