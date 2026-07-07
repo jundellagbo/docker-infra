@@ -58,7 +58,7 @@ services:
       - "8080:80"
       - "8443:443"
     volumes:
-      - ${WWW_PATH:-./www}:/var/www/html
+      - ${WWW_PATH:-./www}:/var/www
       - ./docker/apache/vhosts:/etc/apache2/sites-enabled
       - ./ssl:/etc/apache2/ssl:ro
     depends_on:

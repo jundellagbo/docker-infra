@@ -54,9 +54,19 @@ docker compose up -d
 ### 4. Configure Host DNS
 
 Every container in this Compose stack resolves `*.dev.local` automatically. Host
-applications such as browsers still need host-level DNS configuration. Since hosts
-files do not support wildcards, individual entries can be used as a fallback in
-`C:\Windows\System32\drivers\etc\hosts`:
+applications such as browsers still need host-level DNS configuration.
+
+On Linux hosts with systemd-resolved, install the persistent wildcard resolver:
+
+```bash
+sudo ./scripts/setup-host-dns.sh
+```
+
+This configures `*.dev.local` to resolve to `127.0.0.1` after restarts, so new
+automatic virtual hosts do not need individual hosts-file entries.
+
+If you are using another host OS, individual entries can be used as a fallback
+because hosts files do not support wildcards:
 
 ```
 127.0.0.1 dev.local

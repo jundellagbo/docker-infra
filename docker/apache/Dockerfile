@@ -10,9 +10,14 @@ RUN sed -i \
     -e 's/#LoadModule rewrite_module/LoadModule rewrite_module/' \
     -e 's/#LoadModule ssl_module/LoadModule ssl_module/' \
     -e 's/#LoadModule socache_shmcb_module/LoadModule socache_shmcb_module/' \
+    -e 's/#LoadModule vhost_alias_module/LoadModule vhost_alias_module/' \
     /usr/local/apache2/conf/httpd.conf
 
+# Add automatic Host-header based vhosts for project directories.
+COPY automatic-vhosts.conf /usr/local/apache2/conf/extra/automatic-vhosts.conf
+
 # Enable vhosts include
+RUN echo "Include /usr/local/apache2/conf/extra/automatic-vhosts.conf" >> /usr/local/apache2/conf/httpd.conf
 RUN echo "IncludeOptional /etc/apache2/sites-enabled/*.conf" >> /usr/local/apache2/conf/httpd.conf
 
 # Set ServerName to suppress warning

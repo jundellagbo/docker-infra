@@ -37,9 +37,19 @@ print_error() { echo -e "${RED}✗ $1${NC}"; }
 print_info() { echo -e "${BLUE}→ $1${NC}"; }
 print_warning() { echo -e "${YELLOW}! $1${NC}"; }
 
-ensure_hosts_entry() {
+has_wildcard_host_dns() {
+    local probe="infra-host-dns-check.${DOMAIN_SUFFIX}"
+    getent hosts "$probe" 2>/dev/null | awk '{print $1}' | grep -qx "127.0.0.1"
+}
+
+ensure_host_dns() {
     local domain="$1"
     local entry="127.0.0.1 ${domain}"
+
+    if has_wildcard_host_dns; then
+        print_success "Wildcard host DNS already resolves *.${DOMAIN_SUFFIX}"
+        return
+    fi
 
     if grep -qF "$domain" /etc/hosts 2>/dev/null; then
         print_success "Hosts entry already exists"
@@ -55,6 +65,8 @@ ensure_hosts_entry() {
             print_success "Added hosts entry" || \
             print_warning "Could not add hosts entry"
     else
+        print_warning "Wildcard host DNS is not configured. For a persistent setup, run:"
+        echo "    sudo ${INFRA_DIR}/scripts/setup-host-dns.sh"
         print_warning "Add to /etc/hosts (requires sudo):"
         echo "    echo '${entry}' | sudo tee -a /etc/hosts"
     fi
@@ -149,7 +161,7 @@ EOF
 print_success "Created index.php"
 
 print_success "Automatic nginx vhost: ${FULL_DOMAIN}"
-ensure_hosts_entry "${FULL_DOMAIN}"
+ensure_host_dns "${FULL_DOMAIN}"
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
