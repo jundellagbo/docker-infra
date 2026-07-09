@@ -37,6 +37,9 @@ alias gwipe='git reset --hard && git clean -fd'
 # Who wrote what
 alias gwho='git shortlog -s --'
 
+# Project tooling
+alias sail='./vendor/bin/sail'
+
 # Git branch in PS1
 git_branch() {
   local branch status=""
