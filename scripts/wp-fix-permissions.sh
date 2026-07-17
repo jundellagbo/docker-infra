@@ -7,9 +7,15 @@
 #   - www-data (gid 82) is the PHP-FPM process group, so WordPress can write
 #
 # Permissions:
-#   Directories ........... 755  (wp-content writable dirs: 775)
-#   Files ................. 644  (wp-content writable dirs: 664)
-#   wp-config.php ......... 640  (owner rw, group read-only)
+#   Directories ........... 2775 (setgid: new files inherit the www-data group)
+#   Files ................. 664  (owner+group rw, world-readable)
+#   wp-config.php ......... 660  (owner+group rw, not world-readable)
+#
+# Incoming / newly created files:
+#   Default ACLs are applied on the host side of the bind mount so that any
+#   NEW file — created by PHP-FPM (www-data), docker exec as root, or the
+#   host user in a terminal — is automatically rw for uid 1000 and gid 82,
+#   regardless of the creator's umask. Requires `setfacl` on the host.
 #
 # WordPress config:
 #   FS_METHOD ............. 'direct'  (bypass FTP prompt for plugin/theme uploads)
@@ -59,6 +65,11 @@ if ! docker inspect "$CONTAINER" --format '{{.State.Running}}' 2>/dev/null | gre
     exit 1
 fi
 
+# Resolve the host-side path of the /var/www bind mount (used for ACLs, since
+# the Alpine container has no setfacl — ACLs set on the host apply in-container)
+HOST_WEB_ROOT=$(docker inspect "$CONTAINER" \
+    --format "{{range .Mounts}}{{if eq .Destination \"${WEB_ROOT}\"}}{{.Source}}{{end}}{{end}}" 2>/dev/null)
+
 # Fix permissions for a single project (WordPress or not)
 fix_project() {
     local project_path="$1"
@@ -97,22 +108,30 @@ fix_project() {
     docker exec -u root "$CONTAINER" chown -R www:www-data "$project_path"
     print_success "Ownership set"
 
-    # ── 2. Base permissions: 755 dirs, 644 files ──
-    print_info "Setting base permissions (dirs: 755, files: 644)..."
-    docker exec -u root "$CONTAINER" find "$project_path" -type d -exec chmod 755 {} +
-    docker exec -u root "$CONTAINER" find "$project_path" -type f -exec chmod 644 {} +
-    print_success "Base permissions set"
-
-    # ── 3. Make project root and public dir group-writable ──
-    # PHP-FPM runs as www-data (gid 82). The project root and public directory
-    # must be group-writable so PHP/WP-CLI can create files (e.g. .htaccess,
-    # wp-config.php, wp core download, etc.).
-    print_info "Making project root and web root group-writable (775)..."
-    docker exec -u root "$CONTAINER" chmod 775 "$project_path"
-    if [ "$public_root" != "$project_path" ]; then
-        docker exec -u root "$CONTAINER" chmod 775 "$public_root"
+    # ── 2. Default ACLs so incoming files stay accessible ──
+    # Default ACLs guarantee any NEW file is rw for the host user (uid 1000)
+    # and PHP-FPM (gid 82) no matter who creates it or what their umask is.
+    # Applied on the host side of the bind mount (container lacks setfacl).
+    # Must run BEFORE the chmod step: non-root setfacl strips setgid bits.
+    local host_project_path="${HOST_WEB_ROOT}/${project_name}"
+    if command -v setfacl >/dev/null 2>&1 && [ -n "$HOST_WEB_ROOT" ] && [ -d "$host_project_path" ]; then
+        print_info "Applying default ACLs (new files: rw for uid 1000 + gid 82)..."
+        setfacl -R -m "u:1000:rwX,g:82:rwX,o::rX" "$host_project_path"
+        setfacl -R -d -m "u::rwX,g::rwX,u:1000:rwX,g:82:rwX,o::rX" "$host_project_path"
+        print_success "Default ACLs applied"
+    else
+        print_warning "setfacl unavailable or host path not found — skipping ACLs."
+        print_warning "New files created by PHP may not be writable from the host terminal."
     fi
-    print_success "Root directories are group-writable"
+
+    # ── 3. Base permissions: 2775 dirs (setgid), 664 files ──
+    # setgid on directories makes every NEW file/dir inherit the www-data
+    # group; group-writable files mean both the host user and PHP-FPM can
+    # edit everything even where ACLs are unavailable.
+    print_info "Setting base permissions (dirs: 2775 setgid, files: 664)..."
+    docker exec -u root "$CONTAINER" find "$project_path" -type d -exec chmod 2775 {} +
+    docker exec -u root "$CONTAINER" find "$project_path" -type f -exec chmod 664 {} +
+    print_success "Base permissions set"
 
     # Stop here for non-WordPress projects
     if [ -z "$wp_root" ]; then
@@ -120,25 +139,17 @@ fix_project() {
         return 0
     fi
 
-    # ── 4. wp-content writable: 775 dirs, 664 files ──
-    if docker exec "$CONTAINER" test -d "${wp_root}/wp-content" 2>/dev/null; then
-        print_info "Setting wp-content writable permissions (dirs: 775, files: 664)..."
-        docker exec -u root "$CONTAINER" find "${wp_root}/wp-content" -type d -exec chmod 775 {} +
-        docker exec -u root "$CONTAINER" find "${wp_root}/wp-content" -type f -exec chmod 664 {} +
-        print_success "wp-content permissions set"
-    fi
-
-    # ── 5. Secure wp-config.php (640) ──
+    # ── 4. Secure wp-config.php (660: owner+group rw, not world-readable) ──
     for config_path in "${wp_root}/wp-config.php" "${project_path}/wp-config.php"; do
         if docker exec "$CONTAINER" test -f "$config_path" 2>/dev/null; then
-            print_info "Securing wp-config.php (640)..."
-            docker exec -u root "$CONTAINER" chmod 640 "$config_path"
+            print_info "Securing wp-config.php (660)..."
+            docker exec -u root "$CONTAINER" chmod 660 "$config_path"
             print_success "wp-config.php secured"
             break
         fi
     done
 
-    # ── 6. Ensure FS_METHOD is set to 'direct' in wp-config.php ──
+    # ── 5. Ensure FS_METHOD is set to 'direct' in wp-config.php ──
     # Without this, WordPress detects that file owner (www) ≠ PHP process user
     # (www-data) and asks for FTP credentials when installing plugins/themes.
     for config_path in "${project_path}/wp-config.php" "${wp_root}/wp-config.php"; do
@@ -160,12 +171,12 @@ fix_project() {
         fi
     done
 
-    # ── 7. Ensure uploads directory exists ──
+    # ── 6. Ensure uploads directory exists ──
     if ! docker exec "$CONTAINER" test -d "${wp_root}/wp-content/uploads" 2>/dev/null; then
         print_info "Creating wp-content/uploads..."
         docker exec -u root "$CONTAINER" mkdir -p "${wp_root}/wp-content/uploads"
         docker exec -u root "$CONTAINER" chown www:www-data "${wp_root}/wp-content/uploads"
-        docker exec -u root "$CONTAINER" chmod 775 "${wp_root}/wp-content/uploads"
+        docker exec -u root "$CONTAINER" chmod 2775 "${wp_root}/wp-content/uploads"
         print_success "uploads directory created"
     fi
 
@@ -209,6 +220,7 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Permissions Fixed Successfully!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-echo "  Owner: www (uid 1000) — editable in your IDE"
-echo "  Group: www-data (gid 82) — writable by PHP-FPM"
+echo "  Owner: www (uid 1000) — editable in your IDE/terminal"
+echo "  Group: www-data (gid 82) — writable by PHP-FPM (inherited via setgid)"
+echo "  New files: default ACLs keep them rw for both, regardless of umask"
 echo ""
