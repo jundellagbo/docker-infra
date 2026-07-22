@@ -607,9 +607,14 @@ do not stop at "it renders". Test and validate the design with the tools below.
 - Invoke the `impeccable` skill / its commands (e.g. `/audit`, `/polish`,
   `/redesign`) on the changed UI to catch typography, colour, spacing, layout
   and motion anti-patterns.
-- Or run the no-LLM scanner over the changed files:
+- Or run the no-LLM scanner over the changed files or a directory:
   `npx impeccable detect <path>` - it flags anti-patterns across
-  HTML / CSS / JSX / TSX / Vue / Svelte / CSS-in-JS.
+  HTML / CSS / JSX / TSX / Vue / Svelte / Astro / CSS-in-JS by default.
+- PHP / Blade (`.php`, `.blade.php`) are NOT scanned out of the box - enable them
+  via `detector.extensions` in `.impeccable/config.json`, e.g.
+  `{ "detector": { "extensions": [".php", ".blade.php"] } }`. It checks the
+  markup / CSS design in those files, not the PHP logic - so point it at Blade
+  views and theme templates, not business logic.
 - Fix what it flags; note anything deliberately left as-is and why.
 
 ## 2. Motion & interaction craft - emilkowalski/skills
