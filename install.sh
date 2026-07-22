@@ -1,16 +1,23 @@
 #!/bin/bash
 
-# Install PHP (multiple versions + switcher), Composer and WP-CLI on the host.
+# Install PHP (multiple versions + switcher), Composer, WP-CLI and Node on the host.
 #
 #   sudo ./install.sh                          # 7.4 - 8.4, default 8.3
 #   sudo ./install.sh --versions 8.2 8.3 8.4   # only these (also: --versions=8.2,8.3)
 #   sudo ./install.sh --default 8.2            # pick the default CLI version
 #   sudo ./install.sh --no-composer --no-wp    # skip the extras
+#   sudo ./install.sh --no-node                # skip Node/nvm
+#   sudo ./install.sh --node-version 20        # install this Node major (default: --lts)
+#   sudo ./install.sh --no-claude              # skip the Claude Code CLI
+#   sudo ./install.sh --no-mcp                 # skip registering Claude MCP servers
+#   sudo ./install.sh --no-plugins             # skip installing Claude plugins
 #
-# Afterwards "phpsw" switches the active CLI/FPM version:
+# Afterwards "phpsw" switches the active CLI/FPM version and "nvm" switches Node:
 #
-#   phpsw          # list installed versions
+#   phpsw          # list installed PHP versions
 #   phpsw 8.2      # make 8.2 the default
+#   nvm ls         # list installed Node versions
+#   nvm use 20     # switch the active Node version
 
 set -e
 
@@ -29,6 +36,11 @@ PHP_VERSIONS="7.4 8.0 8.1 8.2 8.3 8.4"
 DEFAULT_VERSION="8.3"
 INSTALL_COMPOSER=1
 INSTALL_WPCLI=1
+INSTALL_NODE=1
+NODE_VERSION="--lts"
+INSTALL_CLAUDE=1
+INSTALL_MCP=1
+INSTALL_PLUGINS=1
 
 # --versions takes one or more versions: "--versions 8.2 8.3", --versions=8.2,8.3
 # and --versions "8.2 8.3" all mean the same thing.
@@ -48,8 +60,14 @@ while [ $# -gt 0 ]; do
         --default=*)        DEFAULT_VERSION="${1#*=}" ;;
         --no-composer)      INSTALL_COMPOSER=0 ;;
         --no-wp|--no-wpcli) INSTALL_WPCLI=0 ;;
+        --no-node)          INSTALL_NODE=0 ;;
+        --node-version)     NODE_VERSION="$2"; shift ;;
+        --node-version=*)   NODE_VERSION="${1#*=}" ;;
+        --no-claude)        INSTALL_CLAUDE=0 ;;
+        --no-mcp)           INSTALL_MCP=0 ;;
+        --no-plugins)       INSTALL_PLUGINS=0 ;;
         -h|--help)
-            sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         # Bare version numbers extend the list: "--versions 8.2 8.3 8.4"
         [0-9].[0-9]|[0-9].[0-9][0-9]) add_versions "$1" ;;
@@ -307,6 +325,143 @@ EOF
     print_success "WP-CLI installed"
 fi
 
+# -------------------------------------------------------------- per-user tools
+
+# nvm, the Claude CLI and its plugins are per-user tools: they install into a
+# home directory and run from a login shell, so target the user who invoked
+# sudo (not root) - that's whose shell will actually use them.
+TOOL_USER="${SUDO_USER:-root}"
+TOOL_HOME="$(getent passwd "$TOOL_USER" | cut -d: -f6)"
+TOOL_HOME="${TOOL_HOME:-$HOME}"
+run_as_user() { su - "$TOOL_USER" -c "$1"; }
+
+# ------------------------------------------------------------------ node / nvm
+
+if [ $INSTALL_NODE -eq 1 ]; then
+    print_info "Installing Node via nvm..."
+
+    # "20" and "--lts" both mean an install target; only "--lts" needs the
+    # lts/* alias for a persistent default.
+    if [ "$NODE_VERSION" = "--lts" ]; then
+        node_default="lts/*"
+    else
+        node_default="$NODE_VERSION"
+    fi
+
+    if [ -s "$TOOL_HOME/.nvm/nvm.sh" ]; then
+        print_info "nvm already present for ${TOOL_USER}"
+    else
+        run_as_user 'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash >/dev/null 2>&1' \
+            && print_success "nvm installed for ${TOOL_USER}" \
+            || print_warning "nvm install failed for ${TOOL_USER} - skipping Node"
+    fi
+
+    if [ -s "$TOOL_HOME/.nvm/nvm.sh" ]; then
+        run_as_user "export NVM_DIR=\"\$HOME/.nvm\"; . \"\$NVM_DIR/nvm.sh\"; nvm install ${NODE_VERSION} && nvm alias default '${node_default}'" >/dev/null 2>&1 \
+            && print_success "Node ${NODE_VERSION} installed (default: ${node_default})" \
+            || print_warning "Node ${NODE_VERSION} installation failed"
+    fi
+fi
+
+# ------------------------------------------------------------------ claude cli
+
+if [ $INSTALL_CLAUDE -eq 1 ]; then
+    print_info "Installing the Claude Code CLI..."
+
+    # The native installer drops the binary into the user's ~/.local/bin, so it
+    # needs no root and no Node. Just the CLI here - skills/instructions and the
+    # plugins/MCPs are wired separately.
+    if run_as_user 'command -v claude >/dev/null 2>&1'; then
+        print_info "Claude CLI already present for ${TOOL_USER}"
+    else
+        run_as_user 'curl -fsSL https://claude.ai/install.sh | bash >/dev/null 2>&1' \
+            && print_success "Claude CLI installed for ${TOOL_USER}" \
+            || print_warning "Claude CLI install failed for ${TOOL_USER}"
+    fi
+fi
+
+# ------------------------------------------------------------------ claude mcps
+
+if [ $INSTALL_CLAUDE -eq 1 ] && [ $INSTALL_MCP -eq 1 ]; then
+    if run_as_user 'command -v claude >/dev/null 2>&1'; then
+        print_info "Registering Claude MCP servers..."
+
+        # $1 = server name (idempotency check + message), $2 = `claude mcp add`
+        # argument string. User scope so the servers are available in every repo.
+        claude_mcp_add() {
+            local name="$1" args="$2"
+            if run_as_user "claude mcp get '$name' >/dev/null 2>&1"; then
+                print_info "MCP ${name} already registered"
+            elif run_as_user "claude mcp add ${args} >/dev/null 2>&1"; then
+                print_success "MCP ${name} registered"
+            else
+                print_warning "MCP ${name} registration failed"
+            fi
+        }
+
+        claude_mcp_add figma           "-s user --transport http figma https://mcp.figma.com/mcp"
+        claude_mcp_add chrome-devtools "-s user chrome-devtools -- npx chrome-devtools-mcp@latest"
+    else
+        print_warning "Claude CLI not available - skipping MCP registration"
+    fi
+fi
+
+# --------------------------------------------------------------- claude plugins
+
+if [ $INSTALL_CLAUDE -eq 1 ] && [ $INSTALL_PLUGINS -eq 1 ]; then
+    if run_as_user 'command -v claude >/dev/null 2>&1'; then
+        print_info "Adding Claude plugin marketplaces..."
+
+        # $1 = marketplace name (idempotency check), $2 = source (owner/repo).
+        # claude-plugins-official ships built-in, so only the extras are added.
+        claude_mkt_add() {
+            local name="$1" src="$2"
+            if run_as_user "claude plugin marketplace list 2>/dev/null | grep -qw '$name'"; then
+                print_info "marketplace ${name} already added"
+            elif run_as_user "claude plugin marketplace add '$src' >/dev/null 2>&1"; then
+                print_success "marketplace ${name} added"
+            else
+                print_warning "marketplace ${name} add failed"
+            fi
+        }
+
+        # $1 = plugin@marketplace id. timeout guards against a hang on a
+        # non-interactive trust prompt; installs at user scope (the default).
+        claude_plugin_add() {
+            local id="$1"
+            if run_as_user "claude plugin list 2>/dev/null | grep -qF '$id'"; then
+                print_info "plugin ${id} already installed"
+            elif run_as_user "timeout 180 claude plugin install '$id' -s user >/dev/null 2>&1"; then
+                print_success "plugin ${id} installed"
+            else
+                print_warning "plugin ${id} install failed"
+            fi
+        }
+
+        claude_mkt_add chrome-devtools-plugins ChromeDevTools/chrome-devtools-mcp
+        claude_mkt_add impeccable              pbakaus/impeccable
+
+        print_info "Installing Claude plugins..."
+        claude_plugin_add figma@claude-plugins-official
+        claude_plugin_add skill-creator@claude-plugins-official
+        claude_plugin_add chrome-devtools-mcp@chrome-devtools-plugins
+        claude_plugin_add impeccable@impeccable
+
+        # emilkowalski's design skills ("milkowalski/skill") ship through the
+        # "skills" CLI, not a Claude marketplace - install them the documented
+        # way. Needs Node/npx (installed above via nvm).
+        if run_as_user 'command -v npx >/dev/null 2>&1 || { export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && command -v npx >/dev/null 2>&1; }'; then
+            run_as_user 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; timeout 180 npx -y skills@latest add emilkowalski/skills >/dev/null 2>&1' \
+                && print_success "skills emilkowalski/skills installed" \
+                || print_warning "emilkowalski/skills install failed - run manually: npx skills@latest add emilkowalski/skills"
+        else
+            print_warning "npx not available - skipping emilkowalski/skills"
+        fi
+    else
+        print_warning "Claude CLI not available - skipping plugin install"
+    fi
+fi
+
 # ------------------------------------------------------------------------ done
 
 echo ""
@@ -315,8 +470,43 @@ echo ""
 echo "  php       $(php -v | head -1)"
 [ $INSTALL_COMPOSER -eq 1 ] && echo "  composer  $(COMPOSER_ALLOW_SUPERUSER=1 composer --version --no-ansi 2>/dev/null | head -1)"
 [ $INSTALL_WPCLI -eq 1 ] && echo "  wp        $(wp --version 2>/dev/null | head -1)"
+if [ $INSTALL_NODE -eq 1 ]; then
+    node_ver="$(su - "${SUDO_USER:-root}" -c 'export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh" 2>/dev/null; node --version' 2>/dev/null | tail -1)"
+    [ -n "$node_ver" ] && echo "  node      ${node_ver} (via nvm)"
+fi
+if [ $INSTALL_CLAUDE -eq 1 ]; then
+    claude_ver="$(su - "${SUDO_USER:-root}" -c 'command -v claude >/dev/null 2>&1 && claude --version' 2>/dev/null | tail -1)"
+    [ -n "$claude_ver" ] && echo "  claude    ${claude_ver}"
+fi
 echo ""
 echo "  installed: $(ls -1 /usr/bin/php[0-9].[0-9] 2>/dev/null | sed 's#.*/php##' | sort -V | tr '\n' ' ')"
-echo "  switch:    phpsw <version>"
+echo "  switch:    phpsw <version>   |   nvm use <version>"
 echo ""
-print_warning "Open a new shell (or 'source /etc/profile.d/composer.sh') to pick up the environment"
+
+# ------------------------------------------------------------ shell integration
+
+# Make bash automatically load git.sh (which pulls in llm.sh and the infra-llm
+# aliases) in future sessions. The repo is resolved from this script's own
+# location, and the line is written to the invoking user's ~/.bashrc - so it
+# works wherever the checkout lives and for whoever ran sudo, not a fixed path.
+INFRA_DIR="$(cd "$(dirname "$0")" && pwd)"
+GIT_SH="${INFRA_DIR}/git.sh"
+if [ -f "$GIT_SH" ]; then
+    src_line="[ -f \"$GIT_SH\" ] && source \"$GIT_SH\""
+    bashrc="${TOOL_HOME}/.bashrc"
+    run_as_user "touch '$bashrc'; grep -qF '$GIT_SH' '$bashrc' 2>/dev/null || printf '%s\n' '$src_line' >> '$bashrc'"
+    print_success "bash will auto-load git.sh (${GIT_SH})"
+else
+    print_warning "git.sh not found next to install.sh - skipping shell integration"
+fi
+
+# Auto-reload bash so the new environment (and git.sh) is live right away. A
+# script can't mutate its parent shell, so the closest thing is to exec a fresh
+# login shell for the invoking user - it re-reads ~/.bashrc and thus sources
+# git.sh. Only do this interactively so non-interactive/CI runs still return.
+if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != root ] && [ -t 0 ] && [ -t 1 ]; then
+    print_info "Reloading bash so git.sh and the new tools are ready..."
+    exec su - "$SUDO_USER"
+else
+    print_warning "Open a new shell (or 'source ${GIT_SH:-./git.sh}') to pick up the environment"
+fi

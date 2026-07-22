@@ -18,6 +18,7 @@
 #   infra-llm --code-review     # review brief + scope of the recent changes
 #   infra-llm --worktrees       # every worktree with its own plan state
 #   infra-llm --skill [name]    # print a protocol skill (step-plan, llm-workflow)
+#   infra-llm --designer        # add the design-review skill (--remove to drop it)
 #   infra-llm --hook <name>     # run a hook (used by the wiring, not by hand)
 #   infra-llm --uninstall       # remove wiring + instruction blocks again
 #
@@ -32,7 +33,7 @@
 #
 # Source it from a shell (git.sh does) for the short aliases:
 #   llminit  llmdocs  llmstatus  llmplan  llmsteps  llmverify  llmsessions
-#   llmreview  llmskill  llmwt
+#   llmreview  llmskill  llmwt  llmdesigner
 #   claude_session   (claude, with session recording wired up first)
 
 # Where this infra checkout lives - resolved whether sourced or executed
@@ -578,6 +579,103 @@ _llm_uninstall() {
   _llm_hm "plans/ and .claude/sessions/ were left alone"
 }
 
+# -------------------------------------------------------------------- designer
+
+# The "design-review" project skill this drops into a repo. It tells the agent
+# to validate UI/design work with the impeccable + emilkowalski design skills
+# and the chrome-devtools MCP instead of eyeballing the result. Kept as a
+# heredoc (like the settings JSON) so there is nothing extra to vendor.
+_llm_designer_skill_md() {
+  cat <<'SKILL'
+---
+name: design-review
+description: >-
+  Use when building, changing, polishing, or reviewing any UI / visual /
+  front-end work - a page, component, layout, styling, animation, or "make this
+  look better / less like AI slop". Drives testing and validation of the design
+  through the impeccable and emilkowalski design skills and the chrome-devtools
+  MCP, instead of eyeballing the result.
+---
+
+# Design review & validation
+
+When the task touches UI, styling, layout, motion, or overall visual quality,
+do not stop at "it renders". Test and validate the design with the tools below.
+
+## 1. Static design audit - impeccable
+
+- Invoke the `impeccable` skill / its commands (e.g. `/audit`, `/polish`,
+  `/redesign`) on the changed UI to catch typography, colour, spacing, layout
+  and motion anti-patterns.
+- Or run the no-LLM scanner over the changed files:
+  `npx impeccable detect <path>` - it flags anti-patterns across
+  HTML / CSS / JSX / TSX / Vue / Svelte / CSS-in-JS.
+- Fix what it flags; note anything deliberately left as-is and why.
+
+## 2. Motion & interaction craft - emilkowalski/skills
+
+- For anything animated or interactive, use the emilkowalski design-engineering
+  skills to review easing / duration, physicality, interruptibility,
+  performance and accessibility of the motion.
+- Prefer their before/after guidance over inventing easing curves.
+
+## 3. Live validation - chrome-devtools MCP
+
+- Load the running UI in Chrome via the `chrome-devtools` MCP and validate it in
+  the real browser, not just in the source:
+  - take a snapshot / screenshot of the rendered result,
+  - inspect computed styles, spacing and contrast on the actual elements,
+  - check console / network for errors introduced by the change,
+  - run a performance / Lighthouse pass when perf or accessibility matter.
+- Compare against what impeccable and the emilkowalski review asked for, and
+  iterate until the rendered page matches.
+
+## Definition of done
+
+A design change is done when impeccable reports no unaddressed anti-patterns,
+motion has been reviewed, and the change has been validated live in the browser
+with no new console / network errors.
+SKILL
+}
+
+# Generate the design-review skill into the current repo's .claude/skills so
+# Claude Code auto-loads it. --remove / -r tears it down again.
+_llm_designer() {
+  local root name dir file remove=0
+  name="design-review"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -r|--remove|remove|--uninstall) remove=1 ;;
+      -*) _llm_no "unknown option: $1"; return 1 ;;
+    esac
+    shift
+  done
+
+  root="$(_llm_target)"
+  dir="$root/.claude/skills/$name"
+  file="$dir/SKILL.md"
+
+  if [ "$remove" -eq 1 ]; then
+    if [ ! -e "$file" ] && [ ! -d "$dir" ]; then
+      _llm_hm "no design-review skill here - nothing to remove"
+      return 0
+    fi
+    rm -f "$file"
+    # Drop the skill directory too, but only if it's now empty (never clobber
+    # anything the user added alongside it).
+    rmdir "$dir" 2>/dev/null || true
+    _llm_ok "removed .claude/skills/$name/"
+    return 0
+  fi
+
+  _llm_c "installing the design-review skill into $root"
+  mkdir -p "$dir"
+  _llm_designer_skill_md > "$file"
+  _llm_ok "wrote .claude/skills/$name/SKILL.md"
+  echo "  uses:   impeccable · emilkowalski/skills · chrome-devtools MCP"
+  echo "  remove: infra-llm --designer --remove"
+}
+
 # ------------------------------------------------------------------ worktrees
 
 # The main checkout behind a linked worktree (the worktree itself if it is the
@@ -859,6 +957,7 @@ infra-llm() {
     --worktrees|--worktree|--wt|worktrees) _llm_worktrees ;;
     --wt-prep)             _llm_wt_prep "$@" ;;
     --skill|skill)         _llm_skill "$@" ;;
+    --designer|designer)   _llm_designer "$@" ;;
     --hook|hook)           _llm_hook "$@" ;;
     --cli)                 _llm_install_cli 1 ;;
     --uninstall|uninstall) _llm_uninstall ;;
@@ -878,6 +977,7 @@ alias llmsessions='infra-llm --sessions'
 alias llmreview='infra-llm --code-review'
 alias llmwt='infra-llm --worktrees'
 alias llmskill='infra-llm --skill'
+alias llmdesigner='infra-llm --designer'
 
 # Executed rather than sourced: run the command line and exit
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

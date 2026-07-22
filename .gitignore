@@ -33,3 +33,6 @@ ssl
 docker/*/.user.ini
 
 .vexp
+plans/
+.llm-verify.env
+.claude/sessions/
