@@ -71,6 +71,23 @@ infra-llm --sessions     # list session records; --sessions <id> prints one
 infra-llm --docs         # refresh the instruction block after infra changes
 ```
 
+## Worktrees
+
+Wiring is tracked (settings + instruction files), so every worktree of a wired
+repo is wired. State is untracked, so each worktree gets its **own** `plans/`,
+`.active-plan`, guard counters and `.claude/sessions/` — that is what makes
+parallel agents safe, one per worktree.
+
+```bash
+infra-llm --worktrees   # every worktree: branch, plan state, session count
+gwtadd <branch>         # new worktree, prepared for an agent automatically
+```
+
+`gwtadd` creates `plans/` and `.claude/sessions/` in the new worktree and
+carries `.llm-verify.env` over from the main checkout (untracked files never
+come along with a checkout). Run `infra-llm --wt-prep` by hand in a worktree
+created some other way.
+
 ## Per-repo tuning
 
 `.llm-verify.env` at the repo root (git-ignored, optional) is where a repo

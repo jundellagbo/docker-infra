@@ -116,9 +116,17 @@ _gwtadd() {
 
   # Untracked env files never come along with the checkout - carry them over
   local f
-  for f in .env .env.local; do
+  for f in .env .env.local .llm-verify.env; do
     [ -f "${root}/${f}" ] && [ ! -e "${path}/${f}" ] && cp "${root}/${f}" "${path}/${f}"
   done
+
+  # Give the worktree its own agent state (plans + session records) so an agent
+  # can start here in parallel with whatever is running in the other worktrees
+  if declare -F _llm_wt_prep >/dev/null 2>&1; then
+    _llm_wt_prep "$path" >/dev/null
+  else
+    mkdir -p "${path}/plans" "${path}/.claude/sessions"
+  fi
 
   echo "worktree ready: $path"
   cd "$path" || return 1

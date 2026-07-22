@@ -113,6 +113,9 @@ would change intended behaviour. Re-run `infra-llm --verify` afterwards.
 - Everything under `plans/` is git-ignored (the active-plan marker, the guard
   counters, and the plan files themselves).
 - `infra-llm --skill llm-workflow` explains the wiring itself.
+- Plan state is **per worktree** (`plans/` is untracked), so parallel agents in
+  different worktrees never share an active plan. Stay inside the worktree you
+  were started in; `infra-llm --worktrees` shows what each one is working on.
 - Session records land in `.claude/sessions/<session-id>.md` (last 10 sessions,
   written by the `SessionEnd` hook) — read them to recover what a previous
   session was asked to do.

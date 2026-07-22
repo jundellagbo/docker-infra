@@ -63,6 +63,15 @@ alone and why. Stop and describe instead of applying when a fix would be large,
 risky, or would change intended behaviour — and argue against a finding you
 believe is wrong rather than "fixing" it.
 
+### Worktrees
+
+`plans/` and `.claude/sessions/` are untracked, so **every git worktree has its
+own active plan and its own session history** — agents in different worktrees
+run in parallel without colliding. Work only in the worktree you were started
+in: never edit another worktree's `plans/`, and never assume a plan you can't
+see in this directory. `infra-llm --worktrees` lists every worktree with its
+plan state.
+
 Session records for the last 10 sessions are written to
 `.claude/sessions/<session-id>.md`; read them to recover what an earlier
 session was asked to do.

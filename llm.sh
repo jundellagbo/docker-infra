@@ -16,6 +16,7 @@
 #   infra-llm --verify [args]   # run the verification gate
 #   infra-llm --sessions [id]   # list/print session records
 #   infra-llm --code-review     # review brief + scope of the recent changes
+#   infra-llm --worktrees       # every worktree with its own plan state
 #   infra-llm --skill [name]    # print a protocol skill (step-plan, llm-workflow)
 #   infra-llm --hook <name>     # run a hook (used by the wiring, not by hand)
 #   infra-llm --uninstall       # remove wiring + instruction blocks again
@@ -31,7 +32,7 @@
 #
 # Source it from a shell (git.sh does) for the short aliases:
 #   llminit  llmdocs  llmstatus  llmplan  llmsteps  llmverify  llmsessions
-#   llmreview  llmskill
+#   llmreview  llmskill  llmwt
 #   claude_session   (claude, with session recording wired up first)
 
 # Where this infra checkout lives - resolved whether sourced or executed
@@ -524,6 +525,7 @@ _llm_init() {
   _llm_c "wiring agent workflow into $root  [$chosen]"
   _llm_install_cli "$force"
   mkdir -p "$root/plans"
+  _llm_wt_prep "$root"
 
   for agent in $chosen; do
     case " $LLM_AGENTS " in
@@ -549,6 +551,20 @@ _llm_init() {
   echo "  tune:     .llm-verify.env   (optional VERIFY_CMD for this repo)"
 }
 
+# A fresh worktree starts with no untracked state: give it its own plans/ and
+# sessions dir, and carry over the main checkout's verify config.
+_llm_wt_prep() {
+  local root="${1:-$(_llm_target)}" main
+  mkdir -p "$root/plans" "$root/.claude/sessions"
+  main="$(_llm_main_root "$root")"
+  [ "$main" = "$root" ] && return 0
+  if [ -f "$main/.llm-verify.env" ] && [ ! -e "$root/.llm-verify.env" ]; then
+    cp "$main/.llm-verify.env" "$root/.llm-verify.env"
+    _llm_ok "carried over .llm-verify.env from the main checkout"
+  fi
+  return 0
+}
+
 _llm_uninstall() {
   local root; root="$(_llm_target)"
   _llm_c "removing agent workflow wiring from $root"
@@ -562,11 +578,82 @@ _llm_uninstall() {
   _llm_hm "plans/ and .claude/sessions/ were left alone"
 }
 
+# ------------------------------------------------------------------ worktrees
+
+# The main checkout behind a linked worktree (the worktree itself if it is the
+# main one). .git/worktrees/<name> lives under the common dir.
+_llm_main_root() {
+  local root="$1" common
+  common="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+  [ -n "$common" ] || { printf '%s\n' "$root"; return 0; }
+  printf '%s\n' "$(dirname "$common")"
+}
+
+_llm_is_worktree() {
+  local root="$1"
+  [ "$(_llm_main_root "$root")" != "$root" ]
+}
+
+# One-line plan state for a directory, for the worktree table
+_llm_plan_line() {
+  local dir="$1" status
+  status="$( cd "$dir" 2>/dev/null && bash "$LLM_HOOKS_DIR/steps-status.sh" 2>/dev/null )"
+  case "$status" in
+    REMAINING*)    printf '%s left: %s' "$(echo "$status" | cut -d'|' -f3)" "$(echo "$status" | cut -d'|' -f4- | cut -c1-48)" ;;
+    NEEDS_VERIFY*) printf 'verify pending' ;;
+    UNPLANNED*)    printf 'plan has no checkboxes' ;;
+    *)             printf '-' ;;
+  esac
+}
+
+# Every worktree of this repo with its own plan state - each one carries its
+# own plans/ and .claude/sessions/, so agents can run in parallel without
+# stepping on each other.
+_llm_worktrees() {
+  local root here path="" branch="" rows=0 line
+  root="$(_llm_target)"
+  if ! git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+    _llm_no "not a git repository"
+    return 1
+  fi
+  here="$root"
+
+  printf '%-24s %-22s %-34s %s\n' "WORKTREE" "BRANCH" "PLAN" "SESSIONS"
+  emit() {
+    [ -n "$path" ] || return 0
+    local mark=" "
+    [ "$path" = "$here" ] && mark="*"
+    printf '%s%-23s %-22s %-34s %s\n' \
+      "$mark" "$(basename "$path")" "${branch:-(detached)}" \
+      "$(_llm_plan_line "$path")" \
+      "$(ls -1 "$path/.claude/sessions"/*.md 2>/dev/null | wc -l)"
+    rows=$((rows + 1))
+    path=""; branch=""
+  }
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) emit; path="${line#worktree }" ;;
+      "branch "*)   branch="${line#branch refs/heads/}" ;;
+      "detached")   branch="(detached)" ;;
+    esac
+  done < <(git -C "$root" worktree list --porcelain 2>/dev/null)
+  emit
+  unset -f emit
+
+  echo ""
+  echo "plans/ and .claude/sessions/ are untracked, so each worktree keeps its own"
+  echo "active plan and its own session history - parallel agents don't collide."
+  [ "$rows" -gt 1 ] || echo "add one with: gwtadd <branch>"
+}
+
 # --------------------------------------------------------------------- status
 
 _llm_status() {
   local root; root="$(_llm_target)"
   echo "repo:     $root"
+  if _llm_is_worktree "$root"; then
+    echo "worktree: $(basename "$root") on $(git -C "$root" branch --show-current 2>/dev/null) (main: $(_llm_main_root "$root"))"
+  fi
   echo "infra:    $LLM_INFRA_DIR"
 
   # Hooks run in a non-interactive shell, so what matters is the launcher on
@@ -769,6 +856,8 @@ infra-llm() {
     --verify|verify)       _llm_hook verify "$@" ;;
     --sessions|sessions)   _llm_sessions "$@" ;;
     --code-review|code-review|--review) _llm_code_review "$@" ;;
+    --worktrees|--worktree|--wt|worktrees) _llm_worktrees ;;
+    --wt-prep)             _llm_wt_prep "$@" ;;
     --skill|skill)         _llm_skill "$@" ;;
     --hook|hook)           _llm_hook "$@" ;;
     --cli)                 _llm_install_cli 1 ;;
@@ -787,6 +876,7 @@ alias llmsteps='infra-llm --steps'
 alias llmverify='infra-llm --verify'
 alias llmsessions='infra-llm --sessions'
 alias llmreview='infra-llm --code-review'
+alias llmwt='infra-llm --worktrees'
 alias llmskill='infra-llm --skill'
 
 # Executed rather than sourced: run the command line and exit

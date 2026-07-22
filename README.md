@@ -333,6 +333,7 @@ infra-llm --plan <slug> # create plans/<slug>.md and register it
 infra-llm --steps       # what the stop hook thinks the next step is
 infra-llm --verify      # run this repo's checks and close out the plan
 infra-llm --code-review # review brief + scope of the recent changes
+infra-llm --worktrees   # every worktree with its own plan state
 infra-llm --sessions    # list/print .claude/sessions records
 infra-llm --skill <n>   # print a protocol skill (step-plan, llm-workflow)
 infra-llm --docs        # refresh the instruction blocks after editing infra
@@ -374,8 +375,23 @@ The instruction block also tells the agent **not** to run repository-mutating
 git commands (commit, push, merge, rebase…) unless asked, and treats code review
 as an on-request command rather than a gate.
 
+### Worktrees
+
+Wiring is tracked, so every worktree of a wired repo is wired. State is not:
+each worktree keeps its own `plans/`, `.active-plan` and `.claude/sessions/`, so
+one agent per worktree can run in parallel without colliding. `gwtadd` prepares
+a new worktree automatically (creates the state dirs, carries `.llm-verify.env`
+over from the main checkout); `infra-llm --worktrees` shows what each worktree
+is working on:
+
+```
+WORKTREE                 BRANCH                 PLAN                               SESSIONS
+*infra                   master                 2 left: wire up the status table   3
+ feature-login           feature/login          verify pending                     1
+```
+
 Short aliases when the shell has sourced `git.sh`: `llminit`, `llmdocs`,
 `llmstatus`, `llmplan`, `llmsteps`, `llmverify`, `llmreview`, `llmsessions`,
-`llmskill`, and
+`llmskill`, `llmwt`, and
 `claude_session` (runs `claude` after making sure session recording is wired up
 in the current directory).
