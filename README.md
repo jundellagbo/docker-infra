@@ -316,3 +316,66 @@ docker compose exec postgresql pg_isready -U root
 
 ### SSL certificate not trusted
 Make sure you installed the CA certificate in Windows (see "Installing CA Certificate in Windows" section above).
+
+## Agent / LLM Workflow (`llm.sh`)
+
+`git.sh` sources `llm.sh`, which ships the shared agent workflow — plan
+protocol, step-by-step stop hooks, session records, and the vexp search guard.
+The hooks live **only here**, in `llm/hooks/`; a project never gets a copy of
+them. `infra-llm --init` just wires that project's hook config to call the
+`infra-llm` command and appends an instruction block to the project's own
+`CLAUDE.md` / `AGENTS.md` / `GEMINI.md`.
+
+```bash
+infra-llm --init        # detect the repo's LLM setups, choose, wire up
+infra-llm --status      # cli, wiring, instruction blocks, active plan, sessions
+infra-llm --plan <slug> # create plans/<slug>.md and register it
+infra-llm --steps       # what the stop hook thinks the next step is
+infra-llm --verify      # run this repo's checks and close out the plan
+infra-llm --code-review # review brief + scope of the recent changes
+infra-llm --sessions    # list/print .claude/sessions records
+infra-llm --skill <n>   # print a protocol skill (step-plan, llm-workflow)
+infra-llm --docs        # refresh the instruction blocks after editing infra
+infra-llm --uninstall   # remove the wiring and the instruction blocks
+```
+
+`--init` looks for every LLM setup it knows — Claude Code, Codex, Cursor,
+Windsurf, GitHub Copilot, Gemini, Cline/Roo, Aider — pre-selects the ones the
+repo already shows signs of, and still offers the rest so a repo can adopt one
+it doesn't use yet. Non-interactive: `--claude --codex --cursor --windsurf
+--copilot --gemini --cline --aider`, `--all`, `--yes`.
+
+Claude and Codex are the only two with a hook API; every other agent gets the
+instruction block only, written where that tool actually reads it
+(`.cursor/rules/infra-llm.mdc` with `alwaysApply` frontmatter,
+`.windsurf/rules/infra-llm.md` with `trigger: always_on`,
+`.github/copilot-instructions.md`, `.clinerules/infra-llm.md`,
+`CONVENTIONS.md`, `GEMINI.md`) — following the legacy location
+(`.cursorrules`, `.windsurfrules`, `.clinerules` file) when the repo already
+uses it.
+
+What it touches in the target repo:
+
+| Path                    | What                                                          |
+| ----------------------- | ------------------------------------------------------------- |
+| `.claude/settings.json` | hook entries calling `infra-llm --hook prompt/stop/session/vexp` (merged, existing hooks kept) |
+| `.codex/hooks.json`     | `infra-llm --hook prompt` + `--hook codex-stop`                |
+| each selected agent's instruction file | protocol instructions between `<!-- infra-llm:start -->` markers |
+| `plans/`                | plan files + `.active-plan` marker (git-ignored)               |
+| `.claude/sessions/`     | one `<session-id>.md` per session (last 10), git-ignored       |
+| `.llm-verify.env`       | optional per-repo `VERIFY_CMD` (nothing is assumed otherwise)  |
+
+Hooks run in a non-interactive shell, so `--init` also installs a launcher at
+`~/.local/bin/infra-llm` (override with `LLM_BIN_DIR`). Every wired command is
+guarded with `command -v infra-llm` and fails open, so a checkout on a machine
+without this repo is never blocked.
+
+The instruction block also tells the agent **not** to run repository-mutating
+git commands (commit, push, merge, rebase…) unless asked, and treats code review
+as an on-request command rather than a gate.
+
+Short aliases when the shell has sourced `git.sh`: `llminit`, `llmdocs`,
+`llmstatus`, `llmplan`, `llmsteps`, `llmverify`, `llmreview`, `llmsessions`,
+`llmskill`, and
+`claude_session` (runs `claude` after making sure session recording is wired up
+in the current directory).
