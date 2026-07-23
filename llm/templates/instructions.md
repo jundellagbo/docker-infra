@@ -14,8 +14,10 @@ in here. Run `infra-llm --skill step-plan` for the full protocol.
 | `infra-llm --steps`        | the next unchecked step the stop hook will demand                 |
 | `infra-llm --verify`       | run this repo's checks and close out the plan                     |
 | `infra-llm --code-review`  | review brief + the scope of the recent changes                    |
+| `infra-llm --pull-request` | PR brief + this branch's commits, status and existing PR          |
+| `infra-llm --create-release` | release brief + tags, published releases and commits since       |
 | `infra-llm --sessions`     | past session records in `.claude/sessions/`                       |
-| `infra-llm --status`       | wiring, active plan, session count                                |
+| `infra-llm --status`       | wiring, active plan, git-guard mode, session count                |
 | `infra-llm --skill <name>` | print a protocol skill (`step-plan`, `llm-workflow`)              |
 
 ### How to work
@@ -38,14 +40,54 @@ in here. Run `infra-llm --skill step-plan` for the full protocol.
 The stop hook gives up after 3 consecutive auto-continues with no progress —
 if you hit that, say what is blocking you instead of spinning.
 
+### Don't edit what infra-llm generates
+
+This block (everything between the `infra-llm` markers) and any skill or hook
+infra-llm installed are generated copies. Editing them here is lost on the next
+refresh and never reaches the other repos on the same workflow. Change the
+source in the infra checkout and re-run `infra-llm --docs`; if that isn't
+yours to change, say what needs changing instead of patching the copy.
+
+### Writing plans, instructions and skills
+
+Anything written for an agent to follow later — a plan file, an instruction
+block, a skill, a command brief — is short, specific and imperative. Say what to
+do and why it matters, then stop: padding is re-read on every future run and
+buries the line that mattered. A plan step is one line naming a concrete
+outcome, detail underneath only where it isn't obvious. Explain the reason
+rather than stacking MUSTs; the next agent reads better than it obeys.
+
+Use the `skill-creator` plugin skill when the user asks you to add or rework a
+**skill, instruction file or command** — its frontmatter description is what
+decides whether the thing ever triggers, and that is easy to get wrong by hand.
+
+**Not for plans.** A plan is just the checkbox checklist in `plans/`; write it
+directly and get on with the work — skill-creator's drafting and eval loop is
+pure overhead there.
+
 ### Git
 
-**Do not run repository-mutating git commands unless the user explicitly asks.**
-No `git commit`, `git push`, `git merge`, `git rebase`, `git reset`,
-`git checkout -b`, no branch or tag creation, no stashing, no history rewriting.
-Leave the work in the working tree and say what you changed; the user decides
-when it gets committed. Read-only git (`status`, `diff`, `log`, `show`, `blame`)
-is fine and encouraged.
+**Git state is the user's decision — never run a repository-mutating git
+command** (commit, push, merge, rebase, reset, checkout, branch or tag creation,
+stash, history rewriting). Leave the work in the working tree and say what you
+changed; the user decides when it gets committed. Read-only git (`status`,
+`diff`, `log`, `show`, `blame`) is fine and encouraged.
+
+A guard hook enforces this and denies those commands — don't route around it
+with aliases or wrappers. A repo that wants it relaxed configures that itself;
+destructive commands stay denied regardless.
+
+Never put AI/LLM attribution in a commit message, tag, release note or PR body.
+
+### Pull requests and releases
+
+Asked for a PR or a release, run `infra-llm --pull-request` /
+`infra-llm --create-release`: each prints its brief plus the repo's real state.
+Follow it — don't duplicate one that already exists, verify first, then
+**prepare** the message, body or notes and hand the user the commands to run.
+
+Releases are tagged `vMAJOR.MINOR.PATCH`: `v1.0.1` bug fix, `v1.1.0` feature,
+`v2.0.0` breaking. One breaking change makes it a major release however small.
 
 ### Code review
 

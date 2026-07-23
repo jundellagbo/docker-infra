@@ -34,5 +34,5 @@ docker/*/.user.ini
 
 .vexp
 plans/
-.llm-verify.env
+.infra-llm.env
 .claude/sessions/

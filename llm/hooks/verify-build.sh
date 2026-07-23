@@ -11,15 +11,16 @@
 #
 # Usage: infra-llm --verify
 #
-# Per-repo settings live in .llm-verify.env at the repo root (git-ignored,
-# optional; .agents/verify.env is still read for older setups):
+# Per-repo settings live in .infra-llm.env at the repo root (git-ignored,
+# written by infra-llm --init). That file is the only one read:
 #   VERIFY_CMD="<lint/type-check/test command>"   # unset = no checks to run
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
 cd "$ROOT" || exit 1
 
-[ -f .llm-verify.env ] && . ./.llm-verify.env
-[ -f .agents/verify.env ] && . ./.agents/verify.env
+# Read through tr so a CRLF settings file (Windows editor, WSL checkout) can't
+# smuggle a carriage return into VERIFY_CMD and break the command.
+[ -f .infra-llm.env ] && eval "$(tr -d '\r' < .infra-llm.env)"
 
 # --------------------------------------------------------------------- checks
 
@@ -31,7 +32,7 @@ if [ -n "${VERIFY_CMD:-}" ]; then
   fi
 else
   echo "NOTE: no VERIFY_CMD set - skipping project checks."
-  echo "      Add one in .llm-verify.env to run this repo's own checks here,"
+  echo "      Add one in .infra-llm.env to run this repo's own checks here,"
   echo '      e.g. VERIFY_CMD="<your lint/type-check/test command>"'
 fi
 
@@ -41,6 +42,7 @@ ACTIVE="plans/.active-plan"
 remaining=0
 if [ -f "$ACTIVE" ]; then
   while IFS= read -r plan; do
+    plan="${plan%$'\r'}"               # tolerate a CRLF checkout
     [ -n "$plan" ] && [ -f "$plan" ] || continue
     grep -qE '^[[:space:]]*[-*] \[ \]' "$plan" && remaining=1
   done < "$ACTIVE"

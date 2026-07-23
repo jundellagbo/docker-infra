@@ -19,13 +19,14 @@ fi
 needs_verify=""
 unplanned=""
 while IFS= read -r plan; do
+  plan="${plan%$'\r'}"                 # tolerate a CRLF checkout
   [ -n "$plan" ] && [ -f "$plan" ] || continue
   unchecked=$(grep -cE '^[[:space:]]*[-*] \[ \]' "$plan")
   checked=$(grep -cE '^[[:space:]]*[-*] \[[xX]\]' "$plan")
   if [ "$unchecked" -gt 0 ]; then
     next=$(grep -m1 -E '^[[:space:]]*[-*] \[ \]' "$plan" \
       | sed -E 's/^[[:space:]]*[-*] \[ \][[:space:]]*//' \
-      | tr -d '"\\' | cut -c1-160)
+      | tr -d '"\\\r' | cut -c1-160)
     echo "REMAINING|$plan|$unchecked|$next"
     exit 0
   elif [ "$checked" -gt 0 ]; then

@@ -377,24 +377,27 @@ Make sure you installed the CA certificate in Windows (see "Installing CA Certif
 ## Agent / LLM Workflow (`llm.sh`)
 
 `git.sh` sources `llm.sh`, which ships the shared agent workflow — plan
-protocol, step-by-step stop hooks, session records, and the vexp search guard.
-The hooks live **only here**, in `llm/hooks/`; a project never gets a copy of
-them. `infra-llm --init` just wires that project's hook config to call the
-`infra-llm` command and appends an instruction block to the project's own
-`CLAUDE.md` / `AGENTS.md` / `GEMINI.md`.
+protocol, step-by-step stop hooks, session records, the git guard and the vexp
+search guard. The hooks live **only here**, in `llm/hooks/`; a project never
+gets a copy of them. `infra-llm --init` just wires that project's hook config to
+call the `infra-llm` command and appends an instruction block to the project's
+own `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`.
 
 ```bash
-infra-llm --init        # detect the repo's LLM setups, choose, wire up
-infra-llm --status      # cli, wiring, instruction blocks, active plan, sessions
-infra-llm --plan <slug> # create plans/<slug>.md and register it
-infra-llm --steps       # what the stop hook thinks the next step is
-infra-llm --verify      # run this repo's checks and close out the plan
-infra-llm --code-review # review brief + scope of the recent changes
-infra-llm --worktrees   # every worktree with its own plan state
-infra-llm --sessions    # list/print .claude/sessions records
-infra-llm --skill <n>   # print a protocol skill (step-plan, llm-workflow)
-infra-llm --docs        # refresh the instruction blocks after editing infra
-infra-llm --uninstall   # remove the wiring and the instruction blocks
+infra-llm --init           # detect the repo's LLM setups, choose, wire up
+infra-llm --status         # cli, wiring, docs, active plan, git guard, sessions
+infra-llm --doctor         # can this machine run it? (Linux / macOS / WSL)
+infra-llm --plan <slug>    # create plans/<slug>.md and register it
+infra-llm --steps          # what the stop hook thinks the next step is
+infra-llm --verify         # run this repo's checks and close out the plan
+infra-llm --code-review    # review brief + scope of the recent changes
+infra-llm --pull-request   # PR brief + branch, commits, existing PR
+infra-llm --create-release # release brief + tags, releases, commits since
+infra-llm --worktrees      # every worktree with its own plan state
+infra-llm --sessions       # list/print .claude/sessions records
+infra-llm --skill <n>      # print a protocol skill (step-plan, llm-workflow)
+infra-llm --docs           # refresh the instruction blocks after editing infra
+infra-llm --uninstall      # remove the wiring and the instruction blocks
 ```
 
 `--init` looks for every LLM setup it knows — Claude Code, Codex, Cursor,
@@ -416,28 +419,108 @@ What it touches in the target repo:
 
 | Path                    | What                                                          |
 | ----------------------- | ------------------------------------------------------------- |
-| `.claude/settings.json` | hook entries calling `infra-llm --hook prompt/stop/session/vexp` (merged, existing hooks kept) |
+| `.claude/settings.json` | hook entries calling `infra-llm --hook prompt/stop/session/git-guard/vexp` (merged, existing hooks kept) |
+| `.claude/commands/infra-llm.md` | one generated slash command, `/infra-llm <what>` (skip with `--no-commands`) |
 | `.codex/hooks.json`     | `infra-llm --hook prompt` + `--hook codex-stop`                |
 | each selected agent's instruction file | protocol instructions between `<!-- infra-llm:start -->` markers |
 | `plans/`                | plan files + `.active-plan` marker (git-ignored)               |
 | `.claude/sessions/`     | one `<session-id>.md` per session (last 10), git-ignored       |
-| `.llm-verify.env`       | optional per-repo `VERIFY_CMD` (nothing is assumed otherwise)  |
+| `.infra-llm.env`        | the repo's settings — `VERIFY_CMD`, git-guard mode — written commented-out, git-ignored |
+
+Skip a guard at wiring time with `--no-git-guard` or `--no-vexp`.
 
 Hooks run in a non-interactive shell, so `--init` also installs a launcher at
 `~/.local/bin/infra-llm` (override with `LLM_BIN_DIR`). Every wired command is
 guarded with `command -v infra-llm` and fails open, so a checkout on a machine
 without this repo is never blocked.
 
-The instruction block also tells the agent **not** to run repository-mutating
-git commands (commit, push, merge, rebase…) unless asked, and treats code review
-as an on-request command rather than a gate.
+### Git guard, pull requests and releases
+
+Git state is the **user's** decision. The `PreToolUse(Bash)` git guard denies
+agent-run `git commit` / `push` / `merge` / `rebase` / `reset` / `tag` /
+`stash` / `checkout` …; read-only git passes straight through, and non-git
+commands get no decision at all, so normal permission behaviour is untouched.
+
+Tune it per repo in `.infra-llm.env` (git-ignored, written by `--init`):
+
+```bash
+GIT_GUARD=deny              # default — "ask" prompts the user, "off" disables
+GIT_GUARD_ALLOW="tag stash" # subcommands this repo lets through
+```
+
+Destructive commands (force push, `reset --hard`, `clean -fd`, history
+rewriting, `branch -D`, discarding working-tree changes) stay denied in `deny`
+and `ask` mode and can't be allow-listed — only `off` silences them.
+
+For the git work the agent *should* help with, `infra-llm --pull-request` and
+`infra-llm --create-release` mirror `--code-review`: a short brief plus the
+repo's real state (branch vs. base, uncommitted changes, commits ahead, an
+existing PR, tags, releases, where the version is declared). Both say: don't
+duplicate an existing one, verify first, then prepare the message/body/notes and
+hand the commands to the user — never AI attribution, never a direct push.
+
+Releases are tagged `vMAJOR.MINOR.PATCH` — `v1.0.1` bug fix, `v1.1.0` feature,
+`v2.0.0` breaking — and `--create-release` prints the three candidates computed
+from the previous tag so the bump is a decision, not an invention.
+
+### Adopting it in a repo that already has its own workflow
+
+`plans/adopt-infra-llm.md` is a ready-to-run plan (a local, untracked file —
+`plans/` is git-ignored). Copy it into the target repo's `plans/` and have that
+repo's own agent work through it: inventory its hooks, commands, rules and
+instruction files, decide what infra-llm already covers, and remove only that —
+keeping whatever is genuinely project-specific.
+
+### Slash commands
+
+Claude Code only offers a project command if a file for it exists, so `--init`
+writes exactly **one**: `/infra-llm <what>`. A project repo gets a single file,
+not a command per feature, and everything stays reachable:
+
+```
+/infra-llm review      /infra-llm plan <slug>    /infra-llm status
+/infra-llm pr          /infra-llm steps          /infra-llm sessions
+/infra-llm release     /infra-llm verify         /infra-llm worktrees
+                                                 /infra-llm doctor
+```
+
+The file only points at the CLI — the briefs stay in the infra checkout, so
+there is nothing to keep in sync. `infra-llm --init --no-commands` generates
+nothing at all for repos that would rather use the CLI directly; a command file
+the repo wrote itself is never overwritten; `--uninstall` removes only the
+generated one. The same words work bare in a terminal: `infra-llm pr`,
+`infra-llm review`, `infra-llm doctor`.
+
+If a terminal reports `unknown command`, the shell is running an `infra-llm`
+function it sourced before that command existed — `source <infra>/git.sh` (or a
+new shell) fixes it, and `infra-llm --doctor` detects it.
+
+### Environments
+
+Linux, macOS and Windows via WSL are all supported. Every script is pinned to
+`#!/bin/bash`, which exists on all three, so the interpreter is predictable —
+and because that is bash 3.2 on macOS, nothing here uses bash 4 syntax. The
+scripts also stay inside what a stock BSD userland provides: no `md5sum`, no
+argument-less `mktemp`, no GNU-only flags. `.gitattributes` forces LF endings
+so a Windows checkout can't hand the hooks a `\r` in the shebang, and the hooks
+strip carriage returns from the settings and plan files anyway.
+
+`infra-llm --doctor` checks a machine in one command: OS and bash version, every
+tool the hooks shell out to, the version of `/bin/bash` the shebangs point at,
+whether the launcher is on PATH, CRLF or syntax damage in the hook scripts, and
+a live run of each hook in a scratch directory.
+It exits non-zero when something is actually broken.
+
+Only `git` and the usual POSIX text tools are required. `jq` is optional (no
+session records without it, and the guards fall back to plain text matching);
+`gh` is optional (PR and release commands can't see existing PRs/releases).
 
 ### Worktrees
 
 Wiring is tracked, so every worktree of a wired repo is wired. State is not:
 each worktree keeps its own `plans/`, `.active-plan` and `.claude/sessions/`, so
 one agent per worktree can run in parallel without colliding. `gwtadd` prepares
-a new worktree automatically (creates the state dirs, carries `.llm-verify.env`
+a new worktree automatically (creates the state dirs, carries `.infra-llm.env`
 over from the main checkout); `infra-llm --worktrees` shows what each worktree
 is working on:
 
@@ -448,7 +531,7 @@ WORKTREE                 BRANCH                 PLAN                            
 ```
 
 Short aliases when the shell has sourced `git.sh`: `llminit`, `llmdocs`,
-`llmstatus`, `llmplan`, `llmsteps`, `llmverify`, `llmreview`, `llmsessions`,
-`llmskill`, `llmwt`, and
+`llmstatus`, `llmplan`, `llmsteps`, `llmverify`, `llmreview`, `llmpr`,
+`llmrelease`, `llmsessions`, `llmskill`, `llmwt`, and
 `claude_session` (runs `claude` after making sure session recording is wired up
 in the current directory).

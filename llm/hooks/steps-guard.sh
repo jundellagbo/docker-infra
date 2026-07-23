@@ -8,15 +8,27 @@ AGENT="${1:-agent}"
 ACTIVE="plans/.active-plan"
 GUARD="plans/.progress-guard-$AGENT"
 
+# Any stable digest does - it only compares this run against the previous one.
+# md5sum is GNU-only, so macOS falls through to md5/shasum; cksum is the POSIX
+# backstop that exists everywhere.
+_hash() {
+  if command -v md5sum >/dev/null 2>&1; then md5sum
+  elif command -v md5 >/dev/null 2>&1; then md5 -q
+  elif command -v shasum >/dev/null 2>&1; then shasum
+  else cksum
+  fi | cut -d' ' -f1
+}
+
 hash=""
 if [ -f "$ACTIVE" ]; then
   hash=$(
     {
       cat "$ACTIVE"
       while IFS= read -r plan; do
+        plan="${plan%$'\r'}"           # tolerate a CRLF checkout
         [ -n "$plan" ] && [ -f "$plan" ] && cat "$plan"
       done < "$ACTIVE"
-    } | md5sum | cut -d' ' -f1
+    } | _hash
   )
 fi
 

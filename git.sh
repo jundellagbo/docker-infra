@@ -116,7 +116,7 @@ _gwtadd() {
 
   # Untracked env files never come along with the checkout - carry them over
   local f
-  for f in .env .env.local .llm-verify.env; do
+  for f in .env .env.local .infra-llm.env; do
     [ -f "${root}/${f}" ] && [ ! -e "${path}/${f}" ] && cp "${root}/${f}" "${path}/${f}"
   done
 
@@ -135,8 +135,9 @@ _gwtadd() {
 # Compose project name docker derives from a directory (lowercase, alnum/_/- only)
 _gwt_compose_project() {
   local name
-  name="$(basename "$1")"
-  name="${name,,}"
+  # tr, not ${name,,}: that expansion is bash 4+, and macOS ships bash 3.2 -
+  # a syntax error here would break sourcing this whole file.
+  name="$(basename "$1" | tr '[:upper:]' '[:lower:]')"
   printf '%s\n' "${name//[^a-z0-9_-]/}"
 }
 

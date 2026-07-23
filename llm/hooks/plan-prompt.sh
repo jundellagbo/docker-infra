@@ -25,7 +25,8 @@ STEP-BY-STEP PROTOCOL (this prompt references plan file(s): $refs_line — now r
 
 1. Read the plan file(s) and convert EVERY discrete item into its own
    '- [ ]' checkbox, editing the file in place — the plan file itself is the
-   working checklist; do not create a separate progress file.
+   working checklist; do not create a separate progress file. Each checkbox is
+   one short, specific line naming a concrete outcome; detail goes underneath.
 2. Implement exactly ONE unchecked step per turn (token budgeting). Mark it
    '- [x]' in the plan file when finished, then stop — the Stop hook
    auto-continues you into the next step so nothing is missed.
@@ -33,5 +34,10 @@ STEP-BY-STEP PROTOCOL (this prompt references plan file(s): $refs_line — now r
    (the repo's own VERIFY_CMD if it has one, container-log check, code-review
    gate) and fix failures until it prints VERIFY OK — on success it clears
    plans/.active-plan so the session can end.
+
+Anything you write for a later agent to follow — plan, instructions, skill,
+brief — stays short, specific and imperative. Write the plan file directly:
+skill-creator is for skills, instruction files and commands when the user asks
+for one, never for planning.
 EOF
 exit 0

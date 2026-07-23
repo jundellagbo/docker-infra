@@ -11,11 +11,14 @@
 #   infra-llm --init            # detect the repo's LLM setups, pick, wire up
 #   infra-llm --docs            # re-append/refresh only the instruction blocks
 #   infra-llm --status          # wiring + active plan + session records
+#   infra-llm --doctor          # does this machine (Linux/macOS/WSL) support it?
 #   infra-llm --plan <slug>     # create plans/<slug>.md and register it
 #   infra-llm --steps           # what the stop hook thinks the next step is
 #   infra-llm --verify [args]   # run the verification gate
 #   infra-llm --sessions [id]   # list/print session records
 #   infra-llm --code-review     # review brief + scope of the recent changes
+#   infra-llm --pull-request    # PR brief + branch/commit/PR state
+#   infra-llm --create-release  # release brief + tag/release state
 #   infra-llm --worktrees       # every worktree with its own plan state
 #   infra-llm --skill [name]    # print a protocol skill (step-plan, llm-workflow)
 #   infra-llm --designer        # add the design-review skill (--remove to drop it)
@@ -30,10 +33,12 @@
 #   infra-llm --init --claude --cursor     # explicit (one flag per agent)
 #   infra-llm --init --all --yes           # everything, no prompt
 #   infra-llm --init --force               # rewrite an existing instruction block
+#   infra-llm --init --no-git-guard        # skip the git guard (--no-vexp likewise)
+#   infra-llm --init --no-commands         # generate no slash command at all
 #
 # Source it from a shell (git.sh does) for the short aliases:
 #   llminit  llmdocs  llmstatus  llmplan  llmsteps  llmverify  llmsessions
-#   llmreview  llmskill  llmwt  llmdesigner
+#   llmreview  llmpr  llmrelease  llmskill  llmwt  llmdesigner  llmdoctor
 #   claude_session   (claude, with session recording wired up first)
 
 # Where this infra checkout lives - resolved whether sourced or executed
@@ -53,6 +58,14 @@ LLM_BIN_DIR="${LLM_BIN_DIR:-$HOME/.local/bin}"
 LLM_AGENTS="claude codex cursor windsurf copilot gemini cline aider"
 # Only these two expose a hook API; the rest get instructions only
 LLM_HOOK_AGENTS="claude codex"
+# The one per-repo settings file (VERIFY_CMD, GIT_GUARD, …). Nothing else is
+# read - a repo has exactly this file or it has no settings.
+LLM_ENV_FILE=".infra-llm.env"
+# Bumped whenever a command is added or removed. A shell that sourced an older
+# git.sh keeps that older infra-llm function, which shadows the launcher on
+# PATH and answers "unknown command" for anything added since - comparing this
+# against the value in the file on disk is how --doctor catches that.
+LLM_VERSION="2026-07-23.3"
 LLM_DOC_START="<!-- infra-llm:start -->"
 LLM_DOC_END="<!-- infra-llm:end -->"
 
@@ -67,6 +80,16 @@ _llm_target() {
   root="$(git rev-parse --show-toplevel 2>/dev/null)"
   [ -n "$root" ] || root="$PWD"
   printf '%s\n' "$root"
+}
+
+# BSD mktemp needs a template, GNU is happy with one - so always pass one.
+_llm_tmp() {
+  mktemp "${TMPDIR:-/tmp}/infra-llm.XXXXXX"
+}
+
+# BSD `wc -l` pads its output with spaces; GNU doesn't. Strip either way.
+_llm_count() {
+  wc -l | tr -d '[:space:]'
 }
 
 _llm_assets_ok() {
@@ -89,6 +112,7 @@ _llm_hook() {
     codex-stop)          script="codex-stop.sh" ;;
     session|session-end) script="session-record.sh" ;;
     vexp|search-guard)   script="vexp-guard.sh" ;;
+    git|git-guard)       script="git-guard.sh" ;;
     steps|steps-status)  script="steps-status.sh" ;;
     guard|steps-guard)   script="steps-guard.sh" ;;
     verify|verify-build) script="verify-build.sh" ;;
@@ -266,14 +290,20 @@ _llm_doc_block() {
       printf '  current  %s (block present; --force to refresh)\n' "$file"
       return 0
     fi
-    tmp="$(mktemp)"
+    tmp="$(_llm_tmp)"
     awk -v s="$LLM_DOC_START" -v e="$LLM_DOC_END" '
       index($0, s) { skip = 1 }
       !skip { print }
       index($0, e) { skip = 0 }
     ' "$path" > "$tmp"
-    # drop trailing blank lines left behind by the removed block
-    printf '%s\n' "$(cat "$tmp")" > "$path"
+    # Drop trailing blank lines left behind by the removed block. A file that
+    # held nothing but the block becomes empty again, so repeated refreshes
+    # don't accumulate blank lines at the top.
+    if [ -n "$(tr -d '[:space:]' < "$tmp")" ]; then
+      printf '%s\n' "$(cat "$tmp")" > "$path"
+    else
+      : > "$path"
+    fi
     rm -f "$tmp"
   fi
 
@@ -295,7 +325,7 @@ _llm_doc_strip() {
   local path="$root/$file"
   [ -f "$path" ] || return 0
   grep -qF "$LLM_DOC_START" "$path" || return 0
-  tmp="$(mktemp)"
+  tmp="$(_llm_tmp)"
   awk -v s="$LLM_DOC_START" -v e="$LLM_DOC_END" '
     index($0, s) { skip = 1 }
     !skip { print }
@@ -315,9 +345,10 @@ _llm_hook_cmd() {
 }
 
 _llm_claude_settings_json() {
-  local prompt stop session vexp
+  local prompt stop session vexp git
   prompt="$(_llm_hook_cmd prompt)"; stop="$(_llm_hook_cmd stop)"
   session="$(_llm_hook_cmd session)"; vexp="$(_llm_hook_cmd vexp)"
+  git="$(_llm_hook_cmd git-guard)"
   cat <<JSON
 {
   "hooks": {
@@ -331,6 +362,7 @@ _llm_claude_settings_json() {
       { "hooks": [ { "type": "command", "command": "$stop", "timeout": 30 } ] }
     ],
     "PreToolUse": [
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "$git", "timeout": 10 } ] },
       { "matcher": "Grep|Glob", "hooks": [ { "type": "command", "command": "$vexp", "timeout": 10 } ] }
     ]
   }
@@ -415,6 +447,34 @@ _llm_unmerge_hooks() {
   _llm_ok "unwired  $rel"
 }
 
+# The one per-repo settings file. Written with everything commented out, so a
+# fresh repo behaves exactly as if it weren't there - it exists to be found and
+# edited, not to change defaults. Never overwritten: whatever the repo set wins.
+_llm_env_file() {
+  local root="$1" file="$root/$LLM_ENV_FILE"
+  if [ -f "$file" ]; then
+    printf '  current  %s\n' "$LLM_ENV_FILE"
+    return 0
+  fi
+  cat > "$file" <<'ENV'
+# infra-llm settings for this repo (git-ignored). Everything is optional -
+# uncomment what this repo needs.
+
+# The checks `infra-llm --verify` runs. Unset means no checks at all: no build
+# tool, framework or test runner is assumed.
+#VERIFY_CMD="<this repo's lint/type-check/test command>"
+
+# Git guard (PreToolUse): deny = block agent git writes, ask = the user
+# confirms each one, off = no guard. Destructive commands (force push, hard
+# reset, clean, history rewriting) stay denied unless the guard is off.
+#GIT_GUARD=deny
+
+# Git subcommands this repo lets the agent run anyway, space separated.
+#GIT_GUARD_ALLOW="tag stash"
+ENV
+  _llm_ok "wrote    $LLM_ENV_FILE"
+}
+
 # Workflow state is per-machine scratch, never committed. Creates .gitignore
 # when the repo has none - otherwise these entries would silently never land.
 _llm_gitignore() {
@@ -429,7 +489,7 @@ _llm_gitignore() {
     printf '\n' >> "$file"
   fi
 
-  for line in "plans/" ".llm-verify.env" ".claude/sessions/"; do
+  for line in "plans/" "$LLM_ENV_FILE" ".claude/sessions/"; do
     bare="${line%/}"
     # Accept the entry however it is already written (with or without the
     # trailing slash or a leading /), so re-running never duplicates it
@@ -451,16 +511,114 @@ _llm_gitignore() {
   fi
 }
 
+# ------------------------------------------------------------ slash commands
+
+# Claude Code only exposes a project command if a file for it exists under
+# .claude/commands/. The brief itself stays in the infra checkout - these are
+# three-line wrappers that shell out to it, so there is still one source of
+# truth and nothing to keep in sync.
+LLM_CMD_MARK="<!-- infra-llm:generated -->"
+
+# A repo gets ONE generated command - "/infra-llm <what>" - so the footprint in
+# somebody else's project is a single file, and every workflow command is still
+# reachable. The brief and the routing stay in the infra checkout; this file
+# only points at them. --init --no-commands skips even this.
+LLM_COMMANDS="infra-llm"
+# Generated under earlier schemes - removed on sight so a repo keeps only one
+LLM_COMMANDS_OLD="pull-request create-release infra-llm-review infra-llm-pr \
+infra-llm-release infra-llm-plan infra-llm-steps infra-llm-verify \
+infra-llm-status infra-llm-sessions infra-llm-worktrees infra-llm-doctor"
+
+_llm_command_md() {
+  cat <<'CMD'
+---
+description: Run an infra-llm workflow command - review, pr, release, plan, steps, verify, status, sessions, worktrees, doctor.
+---
+
+<!-- infra-llm:generated -->
+Generated by `infra-llm --init`. Don't edit this file - a re-run overwrites it;
+change it in the infra checkout instead.
+
+Run `infra-llm $ARGUMENTS` and act on what it prints:
+
+| Argument             | What you get                                          |
+| -------------------- | ----------------------------------------------------- |
+| `review`             | review brief + the scope of the recent changes - verify each finding, then fix it |
+| `pr`                 | pull-request brief + branch, commits and any existing PR - follow it |
+| `release [version]`  | release brief + tags, releases and commits since - follow it |
+| `plan <slug>`        | creates and registers a plan - then fill it with one checkbox per step |
+| `steps`              | the next unchecked step of the active plan            |
+| `verify`             | this repo's checks - fix what it reports until it prints VERIFY OK |
+| `status`             | wiring, active plan, git guard, sessions              |
+| `sessions [id]`      | recorded session histories                            |
+| `worktrees`          | every worktree with its own plan state                |
+| `doctor`             | whether this machine can run the workflow             |
+
+With no argument it prints the status. For anything that prints a brief, follow
+that brief rather than improvising - it carries the repo's real state.
+CMD
+}
+
+_llm_install_commands() {
+  local root="$1" dir="$root/.claude/commands" name file
+  mkdir -p "$dir" || return 0
+
+  # Drop the previous generation's names, ours only
+  for name in $LLM_COMMANDS_OLD; do
+    file="$dir/$name.md"
+    [ -f "$file" ] && grep -qF "$LLM_CMD_MARK" "$file" 2>/dev/null && {
+      rm -f "$file"; _llm_ok "replaced /$name with the single /infra-llm command"
+    }
+  done
+
+  for name in $LLM_COMMANDS; do
+    file="$dir/$name.md"
+    # Never clobber a command the repo wrote itself
+    if [ -f "$file" ] && ! grep -qF "$LLM_CMD_MARK" "$file" 2>/dev/null; then
+      _llm_hm "kept     .claude/commands/$name.md (not generated by infra-llm)"
+      continue
+    fi
+    if [ -f "$file" ] && [ "$(cat "$file")" = "$(_llm_command_md)" ]; then
+      printf '  current  .claude/commands/%s.md\n' "$name"
+      continue
+    fi
+    _llm_command_md > "$file"
+    _llm_ok "command  /$name"
+  done
+}
+
+_llm_remove_commands() {
+  local root="$1" dir="$root/.claude/commands" name file
+  [ -d "$dir" ] || return 0
+  for name in $LLM_COMMANDS $LLM_COMMANDS_OLD; do
+    file="$dir/$name.md"
+    [ -f "$file" ] || continue
+    if grep -qF "$LLM_CMD_MARK" "$file" 2>/dev/null; then
+      rm -f "$file"
+      _llm_ok "removed  .claude/commands/$name.md"
+    fi
+  done
+  rmdir "$dir" 2>/dev/null || true
+}
+
 # ----------------------------------------------------------------- installers
 
 _llm_install_claude() {
-  local root="$1" force="$2" want_vexp="$3" desired
+  local root="$1" force="$2" want_vexp="$3" want_git="${4:-1}" want_cmds="${5:-1}" desired
   desired="$(_llm_claude_settings_json)"
-  if [ "$want_vexp" -eq 0 ] && command -v jq >/dev/null 2>&1; then
-    desired="$(printf '%s' "$desired" | jq 'del(.hooks.PreToolUse)')"
+  # Drop the opted-out PreToolUse guards by matcher, keeping the other one, and
+  # drop PreToolUse entirely when neither is wanted.
+  if { [ "$want_vexp" -eq 0 ] || [ "$want_git" -eq 0 ]; } && command -v jq >/dev/null 2>&1; then
+    desired="$(printf '%s' "$desired" | jq \
+      --argjson vexp "$want_vexp" --argjson git "$want_git" '
+      .hooks.PreToolUse |= map(select(
+        (.matcher == "Grep|Glob" and $vexp == 1) or (.matcher == "Bash" and $git == 1)
+      ))
+      | if (.hooks.PreToolUse | length) == 0 then del(.hooks.PreToolUse) else . end')"
   fi
   _llm_merge_hooks "$root/.claude/settings.json" "$desired" ".claude/settings.json"
   mkdir -p "$root/.claude/sessions"
+  [ "$want_cmds" -eq 1 ] && _llm_install_commands "$root"
   _llm_doc_block "$root" "$(_llm_agent_doc "$root" claude)" "$force" claude
 }
 
@@ -477,12 +635,14 @@ _llm_install_docs_agent() {
 }
 
 _llm_init() {
-  local force=0 docs_only=0 want_vexp=1 assume_yes=0 root="" chosen="" agent
+  local force=0 docs_only=0 want_vexp=1 want_git=1 want_cmds=1 assume_yes=0 root="" chosen="" agent
   while [ $# -gt 0 ]; do
     case "$1" in
       -f|--force)  force=1 ;;
       --docs)      docs_only=1 ;;
       --no-vexp)   want_vexp=0 ;;
+      --no-git-guard|--no-git) want_git=0 ;;
+      --no-commands|--no-command) want_cmds=0 ;;
       -y|--yes)    assume_yes=1 ;;
       --all)       chosen="$LLM_AGENTS" ;;
       --claude|--codex|--cursor|--windsurf|--copilot|--gemini|--cline|--aider)
@@ -526,6 +686,7 @@ _llm_init() {
   _llm_c "wiring agent workflow into $root  [$chosen]"
   _llm_install_cli "$force"
   mkdir -p "$root/plans"
+  _llm_env_file "$root"
   _llm_wt_prep "$root"
 
   for agent in $chosen; do
@@ -534,13 +695,20 @@ _llm_init() {
       *) _llm_hm "unknown agent, skipped: $agent"; continue ;;
     esac
     case "$agent" in
-      claude) _llm_install_claude "$root" "$force" "$want_vexp" ;;
+      claude) _llm_install_claude "$root" "$force" "$want_vexp" "$want_git" "$want_cmds" ;;
       codex)  _llm_install_codex  "$root" "$force" ;;
       *)      _llm_install_docs_agent "$root" "$force" "$agent" ;;
     esac
   done
 
   _llm_gitignore "$root"
+
+  # Renamed from these - say so rather than silently ignoring a repo's settings
+  local old
+  for old in infra-llm.env .llm-verify.env .llm-git.env .agents/verify.env; do
+    [ -f "$root/$old" ] || continue
+    _llm_hm "$old is no longer read - move its settings into $LLM_ENV_FILE"
+  done
 
   echo ""
   _llm_ok "workflow ready for: $chosen"
@@ -549,7 +717,15 @@ _llm_init() {
   case " $chosen " in *" claude "*)
   echo "  sessions: .claude/sessions/ (one file per session, last 10)" ;;
   esac
-  echo "  tune:     .llm-verify.env   (optional VERIFY_CMD for this repo)"
+  echo "  tune:     $LLM_ENV_FILE     (VERIFY_CMD, git guard - all optional)"
+  case " $chosen " in *" claude "*)
+    [ "$want_cmds" -eq 1 ] && echo "  command:  /infra-llm <what>   (one file; --no-commands to skip)" ;;
+  esac
+  case " $chosen " in *" claude "*)
+    if [ "$want_git" -eq 1 ]; then
+  echo "  git:      guarded          (agent can't commit/push; tune in $LLM_ENV_FILE)"
+    fi ;;
+  esac
 }
 
 # A fresh worktree starts with no untracked state: give it its own plans/ and
@@ -559,9 +735,9 @@ _llm_wt_prep() {
   mkdir -p "$root/plans" "$root/.claude/sessions"
   main="$(_llm_main_root "$root")"
   [ "$main" = "$root" ] && return 0
-  if [ -f "$main/.llm-verify.env" ] && [ ! -e "$root/.llm-verify.env" ]; then
-    cp "$main/.llm-verify.env" "$root/.llm-verify.env"
-    _llm_ok "carried over .llm-verify.env from the main checkout"
+  if [ -f "$main/$LLM_ENV_FILE" ] && [ ! -e "$root/$LLM_ENV_FILE" ]; then
+    cp "$main/$LLM_ENV_FILE" "$root/$LLM_ENV_FILE"
+    _llm_ok "carried over $LLM_ENV_FILE from the main checkout"
   fi
   return 0
 }
@@ -571,6 +747,7 @@ _llm_uninstall() {
   _llm_c "removing agent workflow wiring from $root"
   _llm_unmerge_hooks "$root/.claude/settings.json" ".claude/settings.json"
   _llm_unmerge_hooks "$root/.codex/hooks.json" ".codex/hooks.json"
+  _llm_remove_commands "$root"
   local agent
   for agent in $LLM_AGENTS; do
     _llm_doc_strip "$root" "$(_llm_agent_doc "$root" "$agent")"
@@ -599,47 +776,36 @@ description: >-
 
 # Design review & validation
 
-When the task touches UI, styling, layout, motion, or overall visual quality,
-do not stop at "it renders". Test and validate the design with the tools below.
+<!-- Generated by `infra-llm --designer`. Don't edit this file: a re-run
+     overwrites it. Change it in the infra checkout instead. -->
 
-## 1. Static design audit - impeccable
+"It renders" is not done. When a change touches UI, styling, layout or motion,
+validate it instead of eyeballing it.
 
-- Invoke the `impeccable` skill / its commands (e.g. `/audit`, `/polish`,
-  `/redesign`) on the changed UI to catch typography, colour, spacing, layout
-  and motion anti-patterns.
-- Or run the no-LLM scanner over the changed files or a directory:
-  `npx impeccable detect <path>` - it flags anti-patterns across
-  HTML / CSS / JSX / TSX / Vue / Svelte / Astro / CSS-in-JS by default.
-- PHP / Blade (`.php`, `.blade.php`) are NOT scanned out of the box - enable them
-  via `detector.extensions` in `.impeccable/config.json`, e.g.
-  `{ "detector": { "extensions": [".php", ".blade.php"] } }`. It checks the
-  markup / CSS design in those files, not the PHP logic - so point it at Blade
-  views and theme templates, not business logic.
-- Fix what it flags; note anything deliberately left as-is and why.
+## 1. Audit the design - impeccable
 
-## 2. Motion & interaction craft - emilkowalski/skills
+Run the `impeccable` skill (or its no-LLM scanner, `npx impeccable detect
+<path>`) over the changed UI to catch typography, colour, spacing, layout and
+motion anti-patterns. The scanner covers the common web markup/CSS formats; for
+server-rendered template languages it has to be told which extensions to scan,
+and it judges the markup and CSS, not the backend logic. Fix what it flags and
+say what you deliberately left alone.
 
-- For anything animated or interactive, use the emilkowalski design-engineering
-  skills to review easing / duration, physicality, interruptibility,
-  performance and accessibility of the motion.
-- Prefer their before/after guidance over inventing easing curves.
+## 2. Review the motion - emilkowalski/skills
 
-## 3. Live validation - chrome-devtools MCP
+For anything animated or interactive, review easing, duration, physicality,
+interruptibility, performance and accessibility with the emilkowalski
+design-engineering skills rather than inventing curves.
 
-- Load the running UI in Chrome via the `chrome-devtools` MCP and validate it in
-  the real browser, not just in the source:
-  - take a snapshot / screenshot of the rendered result,
-  - inspect computed styles, spacing and contrast on the actual elements,
-  - check console / network for errors introduced by the change,
-  - run a performance / Lighthouse pass when perf or accessibility matter.
-- Compare against what impeccable and the emilkowalski review asked for, and
-  iterate until the rendered page matches.
+## 3. Validate live - chrome-devtools MCP
 
-## Definition of done
+Load the running UI in a real browser: screenshot the result, inspect computed
+styles, spacing and contrast on the actual elements, check the console and
+network for new errors, and run a performance/accessibility pass when those
+matter. Iterate until the rendered page matches what the audit asked for.
 
-A design change is done when impeccable reports no unaddressed anti-patterns,
-motion has been reviewed, and the change has been validated live in the browser
-with no new console / network errors.
+Done means: no unaddressed anti-patterns, motion reviewed, and the change seen
+working in the browser with no new console or network errors.
 SKILL
 }
 
@@ -688,7 +854,16 @@ _llm_designer() {
 _llm_main_root() {
   local root="$1" common
   common="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
-  [ -n "$common" ] || { printf '%s\n' "$root"; return 0; }
+  # git < 2.31 has no --path-format; its --git-common-dir may be relative to the
+  # worktree, so resolve it there.
+  if [ -z "$common" ]; then
+    common="$(git -C "$root" rev-parse --git-common-dir 2>/dev/null)"
+    case "$common" in
+      ""|--*) printf '%s\n' "$root"; return 0 ;;
+      /*) ;;
+      *)  common="$( cd "$root" && cd "$(dirname "$common")" 2>/dev/null && pwd )/$(basename "$common")" ;;
+    esac
+  fi
   printf '%s\n' "$(dirname "$common")"
 }
 
@@ -729,7 +904,7 @@ _llm_worktrees() {
     printf '%s%-23s %-22s %-34s %s\n' \
       "$mark" "$(basename "$path")" "${branch:-(detached)}" \
       "$(_llm_plan_line "$path")" \
-      "$(ls -1 "$path/.claude/sessions"/*.md 2>/dev/null | wc -l)"
+      "$(ls -1 "$path/.claude/sessions"/*.md 2>/dev/null | _llm_count)"
     rows=$((rows + 1))
     path=""; branch=""
   }
@@ -747,6 +922,192 @@ _llm_worktrees() {
   echo "plans/ and .claude/sessions/ are untracked, so each worktree keeps its own"
   echo "active plan and its own session history - parallel agents don't collide."
   [ "$rows" -gt 1 ] || echo "add one with: gwtadd <branch>"
+}
+
+# --------------------------------------------------------------------- doctor
+
+# Can this machine run the workflow? Reports the environment and the tools the
+# hooks shell out to, then runs each hook for real - a syntax check proves
+# nothing about a BSD userland or a CRLF checkout.
+_llm_doctor() {
+  local fails=0 warns=0 os="unknown" tmp t path out
+
+  case "$(uname -s 2>/dev/null)" in
+    Linux)  os="Linux"; grep -qi microsoft /proc/version 2>/dev/null && os="WSL (Linux on Windows)" ;;
+    Darwin) os="macOS" ;;
+    CYGWIN*|MINGW*|MSYS*) os="Windows (git-bash/msys)" ;;
+  esac
+
+  echo "environment"
+  printf '  os:       %s\n' "$os"
+  printf '  version:  %s\n' "$LLM_VERSION"
+  printf '  bash:     %s\n' "${BASH_VERSION:-unknown}"
+  printf '  infra:    %s\n' "$LLM_INFRA_DIR"
+
+  # The scripts hard-code #!/bin/bash, so that interpreter is what runs them -
+  # not whichever bash is first on PATH. macOS ships 3.2 there, which is why
+  # nothing in these scripts may use bash 4 syntax.
+  local sv
+  if [ -x /bin/bash ]; then
+    sv="$(/bin/bash -c 'echo "$BASH_VERSION"' 2>/dev/null)"
+    printf '  shebang:  /bin/bash %s\n' "${sv:-(version unknown)}"
+    case "$sv" in
+      [12].*|3.0*|3.1*)
+        _llm_no "/bin/bash is $sv - too old; the scripts need 3.2 or newer"
+        fails=$((fails + 1)) ;;
+      3.2*)
+        _llm_hm "/bin/bash is 3.2 (stock macOS) - supported, and nothing here uses bash 4 syntax"
+        warns=$((warns + 1)) ;;
+    esac
+  else
+    _llm_no "no /bin/bash - every script's shebang points at it"
+    fails=$((fails + 1))
+  fi
+
+  echo ""
+  echo "required tools"
+  for t in bash git grep sed awk tr cut sort head tail wc mktemp; do
+    path="$(command -v "$t" 2>/dev/null)"
+    if [ -n "$path" ]; then
+      printf '  ok       %-8s %s\n' "$t" "$path"
+    else
+      _llm_no "missing  $t - the hooks need it"
+      fails=$((fails + 1))
+    fi
+  done
+  # Any one of these covers the stall guard's digest
+  if ! command -v md5sum >/dev/null 2>&1 && ! command -v md5 >/dev/null 2>&1 \
+     && ! command -v shasum >/dev/null 2>&1 && ! command -v cksum >/dev/null 2>&1; then
+    _llm_no "missing  md5sum/md5/shasum/cksum - the stall guard can't hash the plan"
+    fails=$((fails + 1))
+  fi
+
+  echo ""
+  echo "optional tools"
+  for t in jq gh; do
+    path="$(command -v "$t" 2>/dev/null)"
+    if [ -n "$path" ]; then
+      printf '  ok       %-8s %s\n' "$t" "$path"
+    else
+      case "$t" in
+        jq) _llm_hm "missing  jq - no session records, and the guards fall back to plain text matching" ;;
+        gh) _llm_hm "missing  gh - --pull-request / --create-release can't see existing PRs or releases" ;;
+      esac
+      warns=$((warns + 1))
+    fi
+  done
+
+  echo ""
+  echo "sourced copy"
+  local on_disk
+  on_disk="$(sed -n 's/^LLM_VERSION="\(.*\)"$/\1/p' "$LLM_INFRA_DIR/llm.sh" 2>/dev/null | head -1)"
+  if [ -z "$on_disk" ]; then
+    _llm_hm "could not read LLM_VERSION from $LLM_INFRA_DIR/llm.sh"
+    warns=$((warns + 1))
+  elif [ "$on_disk" = "$LLM_VERSION" ]; then
+    printf '  ok       running %s, same as %s/llm.sh\n' "$LLM_VERSION" "$LLM_INFRA_DIR"
+  else
+    _llm_no "this shell has an OLD copy sourced ($LLM_VERSION) - the file on disk is $on_disk"
+    _llm_hm "the stale infra-llm function shadows the launcher, so newer commands report 'unknown command'"
+    _llm_hm "fix with:  source $LLM_INFRA_DIR/git.sh    (or open a new shell)"
+    fails=$((fails + 1))
+  fi
+
+  echo ""
+  echo "launcher"
+  if [ -x "${LLM_BIN_DIR}/infra-llm" ]; then
+    case ":$PATH:" in
+      *":${LLM_BIN_DIR}:"*) printf '  ok       %s\n' "${LLM_BIN_DIR}/infra-llm" ;;
+      *) _llm_no "${LLM_BIN_DIR} is not on PATH - hooks run non-interactively and won't find infra-llm"
+         fails=$((fails + 1)) ;;
+    esac
+  else
+    _llm_hm "not installed yet - run: infra-llm --init"
+    warns=$((warns + 1))
+  fi
+
+  echo ""
+  echo "hook scripts"
+  local f name crlf=0
+  for f in "$LLM_HOOKS_DIR"/*.sh; do
+    [ -f "$f" ] || continue
+    name="$(basename "$f")"
+    if LC_ALL=C grep -q "$(printf '\r')" "$f" 2>/dev/null; then
+      _llm_no "CRLF     $name - a carriage return in the shebang makes the kernel refuse to run it"
+      crlf=1; fails=$((fails + 1))
+    elif ! bash -n "$f" 2>/dev/null; then
+      _llm_no "syntax   $name"
+      fails=$((fails + 1))
+    else
+      printf '  ok       %s\n' "$name"
+    fi
+  done
+  [ "$crlf" -eq 0 ] || _llm_hm "fix with: git -C \"$LLM_INFRA_DIR\" config core.autocrlf false && git -C \"$LLM_INFRA_DIR\" checkout -- ."
+
+  echo ""
+  echo "hook smoke test"
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/infra-llm-doctor.XXXXXX")" || return 1
+  mkdir -p "$tmp/plans"
+  printf 'plans/t.md\n' > "$tmp/plans/.active-plan"
+  printf -- '- [ ] a test step\n' > "$tmp/plans/t.md"
+
+  out="$( cd "$tmp" && bash "$LLM_HOOKS_DIR/steps-status.sh" 2>/dev/null )"
+  case "$out" in
+    REMAINING*plans/t.md*) printf '  ok       steps-status\n' ;;
+    *) _llm_no "steps-status returned: ${out:-<nothing>}"; fails=$((fails + 1)) ;;
+  esac
+
+  out="$( cd "$tmp" && bash "$LLM_HOOKS_DIR/steps-guard.sh" doctor 2>/dev/null )"
+  case "$out" in
+    [0-9]*) printf '  ok       steps-guard (counter: %s)\n' "$out" ;;
+    *) _llm_no "steps-guard returned: ${out:-<nothing>}"; fails=$((fails + 1)) ;;
+  esac
+
+  out="$( cd "$tmp" && printf '{"prompt":"work on plans/t.md"}' | bash "$LLM_HOOKS_DIR/plan-prompt.sh" 2>/dev/null | head -1 )"
+  case "$out" in
+    STEP-BY-STEP*) printf '  ok       plan-prompt\n' ;;
+    *) _llm_no "plan-prompt returned: ${out:-<nothing>}"; fails=$((fails + 1)) ;;
+  esac
+
+  out="$( printf '{"tool_input":{"command":"git commit -m x"}}' | CLAUDE_PROJECT_DIR="$tmp" bash "$LLM_HOOKS_DIR/git-guard.sh" 2>/dev/null )"
+  case "$out" in
+    *deny*) printf '  ok       git-guard (denies git commit)\n' ;;
+    *) _llm_no "git-guard did not deny a commit: ${out:-<nothing>}"; fails=$((fails + 1)) ;;
+  esac
+  out="$( printf '{"tool_input":{"command":"git status"}}' | CLAUDE_PROJECT_DIR="$tmp" bash "$LLM_HOOKS_DIR/git-guard.sh" 2>/dev/null )"
+  if [ -z "$out" ]; then
+    printf '  ok       git-guard (passes read-only git)\n'
+  else
+    _llm_no "git-guard interfered with 'git status': $out"
+    fails=$((fails + 1))
+  fi
+
+  printf 'VERIFY_CMD="echo doctor-ok"\n' > "$tmp/$LLM_ENV_FILE"
+  out="$( cd "$tmp" && bash "$LLM_HOOKS_DIR/verify-build.sh" 2>/dev/null | sed -n '2p' )"
+  case "$out" in
+    doctor-ok) printf '  ok       verify-build (ran VERIFY_CMD)\n' ;;
+    *) _llm_no "verify-build did not run VERIFY_CMD: ${out:-<nothing>}"; fails=$((fails + 1)) ;;
+  esac
+
+  out="$( printf '{}' | CLAUDE_PROJECT_DIR="$tmp" bash "$LLM_HOOKS_DIR/vexp-guard.sh" 2>/dev/null )"
+  case "$out" in
+    *allow*) printf '  ok       vexp-guard (allows search with no daemon)\n' ;;
+    *) _llm_no "vexp-guard returned: ${out:-<nothing>}"; fails=$((fails + 1)) ;;
+  esac
+
+  rm -rf "$tmp"
+
+  echo ""
+  if [ "$fails" -gt 0 ]; then
+    _llm_no "$fails problem(s) - the workflow will not behave correctly here"
+    return 1
+  fi
+  if [ "$warns" -gt 0 ]; then
+    _llm_hm "$warns optional thing(s) missing - everything essential works"
+  else
+    _llm_ok "all good - Linux, macOS and WSL are all supported"
+  fi
+  return 0
 }
 
 # --------------------------------------------------------------------- status
@@ -805,7 +1166,23 @@ _llm_status() {
     *)             echo "plan:     none active" ;;
   esac
 
-  echo "sessions: $(ls -1 "$root/.claude/sessions"/*.md 2>/dev/null | wc -l) recorded"
+  echo "sessions: $(ls -1 "$root/.claude/sessions"/*.md 2>/dev/null | _llm_count) recorded"
+  if [ -f "$root/.claude/commands/infra-llm.md" ]; then
+    echo "command:  /infra-llm (generated; --init --no-commands to skip)"
+  else
+    echo "command:  none generated - use the infra-llm CLI directly"
+  fi
+
+  local gmode="deny (default)"
+  if [ -f "$root/$LLM_ENV_FILE" ]; then
+    gmode="$( . "$root/$LLM_ENV_FILE" 2>/dev/null; printf '%s' "${GIT_GUARD:-deny} ($LLM_ENV_FILE)" )"
+  fi
+  if grep -q 'infra-llm --hook git-guard' "$root/.claude/settings.json" 2>/dev/null; then
+    echo "git:      guard wired - $gmode"
+  else
+    echo "git:      guard not wired (agent git writes rely on instructions only)"
+  fi
+
   [ -z "$wired$docs" ] && _llm_hm "not wired up here yet - run: infra-llm --init"
   return 0
 }
@@ -828,6 +1205,9 @@ _llm_plan() {
 
 Every discrete item below is one step. The agent implements ONE per turn and
 marks it - [x] here; the stop hook advances to the next.
+
+Keep each step one short, specific line naming a concrete outcome — the stop
+hook reads that line back as the next instruction. Detail goes underneath it.
 
 - [ ] first step
 EOF
@@ -885,6 +1265,169 @@ _llm_code_review() {
     printf 'No uncommitted changes and nothing ahead of the base branch.\n'
     printf 'Review the last commit (`git show HEAD`) or ask what to review.\n'
   fi
+}
+
+# ------------------------------------------------------------------ git briefs
+
+# The base branch to compare/target: origin's default branch, else whatever of
+# master/main exists, else the current branch.
+_llm_base_branch() {
+  local root="$1" b
+  b="$( cd "$root" && git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null )"
+  b="${b#origin/}"
+  if [ -z "$b" ]; then
+    for b in master main trunk develop; do
+      git -C "$root" show-ref --verify --quiet "refs/heads/$b" && break
+      b=""
+    done
+  fi
+  [ -n "$b" ] || b="$( cd "$root" && git branch --show-current 2>/dev/null )"
+  printf '%s\n' "$b"
+}
+
+_llm_git_repo_ok() {
+  local root="$1"
+  if ! git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+    printf '\nNot a git repository - nothing to open a pull request or release from.\n'
+    return 1
+  fi
+}
+
+# Print a brief from llm/templates plus the repo's real state. Read-only: like
+# --code-review, it never runs a repository-mutating git command.
+_llm_pull_request() {
+  local root brief branch base ahead stat
+  root="$(_llm_target)"
+  brief="${LLM_INFRA_DIR}/llm/templates/pull-request.md"
+  [ -f "$brief" ] || { _llm_no "missing template: $brief"; return 1; }
+  cat "$brief"
+
+  printf '\n## Scope\n\n'
+  _llm_git_repo_ok "$root" || return 0
+
+  branch="$( cd "$root" && git branch --show-current 2>/dev/null )"
+  base="$(_llm_base_branch "$root")"
+  printf 'Branch: %s   Base: %s\n' "${branch:-(detached)}" "${base:-?}"
+  if [ -n "$branch" ] && [ "$branch" = "$base" ]; then
+    printf '\n**On the base branch** - the work needs its own branch before a PR.\n'
+  fi
+
+  stat="$( cd "$root" && git status --short 2>/dev/null )"
+  if [ -n "$stat" ]; then
+    printf '\nUncommitted changes (must be committed by the user before the PR):\n\n```\n%s\n```\n' "$stat"
+  else
+    printf '\nWorking tree is clean.\n'
+  fi
+
+  ahead="$( cd "$root" && git log --oneline "origin/${base}..HEAD" 2>/dev/null )"
+  [ -n "$ahead" ] || ahead="$( cd "$root" && git log --oneline "${base}..HEAD" 2>/dev/null )"
+  if [ -n "$ahead" ]; then
+    printf '\nCommits not in %s:\n\n```\n%s\n```\n' "$base" "$ahead"
+    printf '\nDiff stat:\n\n```\n%s\n```\n' \
+      "$( cd "$root" && { git diff --stat "origin/${base}...HEAD" 2>/dev/null || git diff --stat "${base}...HEAD" 2>/dev/null; } )"
+  else
+    printf '\nNo commits ahead of %s yet.\n' "$base"
+  fi
+
+  printf '\nExisting pull request: '
+  if command -v gh >/dev/null 2>&1; then
+    local pr
+    pr="$( cd "$root" && gh pr view --json url,state,title,isDraft 2>/dev/null )"
+    if [ -n "$pr" ]; then
+      printf '\n\n```json\n%s\n```\n\n**A PR already exists - do not create a duplicate.**\n' "$pr"
+    else
+      printf 'none for this branch (gh found no open PR).\n'
+    fi
+  else
+    printf 'unknown - `gh` is not installed, so ask the user or check the forge manually.\n'
+  fi
+
+  printf '\nVerify gate: `infra-llm --verify`%s\n' \
+    "$( grep -qsE '^[[:space:]]*VERIFY_CMD=' "$root/$LLM_ENV_FILE" && printf ' (VERIFY_CMD set in %s)' "$LLM_ENV_FILE" || printf ' (no VERIFY_CMD configured - say so instead of claiming it passed)' )"
+}
+
+_llm_create_release() {
+  local root brief want="$1" tags last range
+  root="$(_llm_target)"
+  brief="${LLM_INFRA_DIR}/llm/templates/create-release.md"
+  [ -f "$brief" ] || { _llm_no "missing template: $brief"; return 1; }
+  cat "$brief"
+
+  printf '\n## Scope\n\n'
+  [ -n "$want" ] && printf 'Requested version: %s\n\n' "$want"
+  _llm_git_repo_ok "$root" || return 0
+
+  printf 'Branch: %s\n' "$( cd "$root" && git branch --show-current 2>/dev/null )"
+
+  tags="$( cd "$root" && git tag --sort=-v:refname 2>/dev/null | head -10 )"
+  if [ -n "$tags" ]; then
+    printf '\nMost recent tags:\n\n```\n%s\n```\n' "$tags"
+    last="$(printf '%s\n' "$tags" | head -1)"
+  else
+    printf '\nNo tags yet - this would be the first release.\n'
+  fi
+
+  if [ -n "$want" ] && printf '%s\n' "$tags" | grep -qxF "$want"; then
+    printf '\n**Tag %s already exists - do not create a duplicate.**\n' "$want"
+  fi
+
+  # Candidate next versions, so the agent picks a bump rather than inventing a
+  # number. Only for a vX.Y.Z-shaped previous tag; anything else is the user's.
+  if [ -n "$last" ] && printf '%s' "$last" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+$'; then
+    local core maj min pat pre
+    core="${last#v}"; pre=""
+    case "$last" in v*) pre="v" ;; esac
+    maj="${core%%.*}"; pat="${core##*.}"; min="${core#*.}"; min="${min%.*}"
+    printf '\nNext from %s:  %s%s.%s.%s bug fix  ·  %s%s.%s.0 feature  ·  %s%s.0.0 breaking\n' \
+      "$last" "$pre" "$maj" "$min" "$((pat + 1))" \
+      "$pre" "$maj" "$((min + 1))" "$pre" "$((maj + 1))"
+  fi
+
+  if [ -n "$last" ]; then
+    range="$( cd "$root" && git log --oneline "${last}..HEAD" 2>/dev/null )"
+    if [ -n "$range" ]; then
+      printf '\nCommits since %s:\n\n```\n%s\n```\n' "$last" "$range"
+      printf '\nDiff stat (%s..HEAD):\n\n```\n%s\n```\n' "$last" \
+        "$( cd "$root" && git diff --stat "${last}..HEAD" 2>/dev/null )"
+    else
+      printf '\nNothing new since %s - there may be nothing to release.\n' "$last"
+    fi
+  else
+    printf '\nRecent commits:\n\n```\n%s\n```\n' "$( cd "$root" && git log --oneline -20 2>/dev/null )"
+  fi
+
+  printf '\nPublished releases: '
+  if command -v gh >/dev/null 2>&1; then
+    local rel
+    rel="$( cd "$root" && gh release list --limit 5 2>/dev/null )"
+    if [ -n "$rel" ]; then printf '\n\n```\n%s\n```\n' "$rel"; else printf 'none found by gh.\n'; fi
+  else
+    printf 'unknown - `gh` is not installed; tag-only releases then, or ask the user.\n'
+  fi
+
+  # Dependency/lock churn in the range - the concrete input for the security
+  # pass. Matched by name so no ecosystem is assumed; the agent reads the diff.
+  if [ -n "$last" ]; then
+    local deps
+    deps="$( cd "$root" && git diff --name-only "${last}..HEAD" 2>/dev/null | grep -iE \
+      '(^|/)(package(-lock)?\.json|yarn\.lock|pnpm-lock\.yaml|composer\.(json|lock)|Gemfile(\.lock)?|(requirements[^/]*\.txt)|poetry\.lock|Pipfile(\.lock)?|pyproject\.toml|go\.(mod|sum)|Cargo\.(toml|lock)|.*\.csproj|pom\.xml|build\.gradle.*|mix\.exs|pubspec\.(yaml|lock))$' )"
+    if [ -n "$deps" ]; then
+      printf '\nDependency manifests changed since %s - check these for security updates:\n\n```\n%s\n```\n' "$last" "$deps"
+    else
+      printf '\nNo dependency manifest changed since %s.\n' "$last"
+    fi
+  fi
+
+  # Where this repo declares its version, so the agent bumps the right files
+  local vf found=""
+  for vf in package.json composer.json pyproject.toml Cargo.toml VERSION version.txt \
+            style.css CHANGELOG.md galaxy.yml build.gradle setup.py; do
+    [ -f "$root/$vf" ] && found="$found $vf"
+  done
+  printf '\nVersion declared in (check and keep in sync):%s\n' "${found:- nothing obvious - ask the user}"
+
+  printf '\nVerify gate: `infra-llm --verify`%s\n' \
+    "$( grep -qsE '^[[:space:]]*VERIFY_CMD=' "$root/$LLM_ENV_FILE" && printf ' (VERIFY_CMD set in %s)' "$LLM_ENV_FILE" || printf ' (no VERIFY_CMD configured - say so instead of claiming it passed)' )"
 }
 
 _llm_skill() {
@@ -954,12 +1497,15 @@ infra-llm() {
     --init|init)           _llm_init "$@" ;;
     --docs|docs)           _llm_init --docs "$@" ;;
     --status|status)       _llm_status ;;
+    --doctor|doctor|--check|check) _llm_doctor ;;
     --plan|plan)           _llm_plan "$@" ;;
     --steps|steps)         _llm_hook steps ;;
     --verify|verify)       _llm_hook verify "$@" ;;
     --sessions|sessions)   _llm_sessions "$@" ;;
-    --code-review|code-review|--review) _llm_code_review "$@" ;;
-    --worktrees|--worktree|--wt|worktrees) _llm_worktrees ;;
+    --code-review|code-review|--review|review) _llm_code_review "$@" ;;
+    --pull-request|pull-request|--pr|pr) _llm_pull_request "$@" ;;
+    --create-release|create-release|--release|release) _llm_create_release "$@" ;;
+    --worktrees|--worktree|--wt|worktrees|wt) _llm_worktrees ;;
     --wt-prep)             _llm_wt_prep "$@" ;;
     --skill|skill)         _llm_skill "$@" ;;
     --designer|designer)   _llm_designer "$@" ;;
@@ -967,7 +1513,7 @@ infra-llm() {
     --cli)                 _llm_install_cli 1 ;;
     --uninstall|uninstall) _llm_uninstall ;;
     -h|--help|help)
-      sed -n '3,32p' "${LLM_INFRA_DIR}/llm.sh" | sed 's/^# \{0,1\}//' ;;
+      sed -n '3,37p' "${LLM_INFRA_DIR}/llm.sh" | sed 's/^# \{0,1\}//' ;;
     *) _llm_no "unknown command: $cmd"; return 1 ;;
   esac
 }
@@ -975,11 +1521,14 @@ infra-llm() {
 alias llminit='infra-llm --init'
 alias llmdocs='infra-llm --docs'
 alias llmstatus='infra-llm --status'
+alias llmdoctor='infra-llm --doctor'
 alias llmplan='infra-llm --plan'
 alias llmsteps='infra-llm --steps'
 alias llmverify='infra-llm --verify'
 alias llmsessions='infra-llm --sessions'
 alias llmreview='infra-llm --code-review'
+alias llmpr='infra-llm --pull-request'
+alias llmrelease='infra-llm --create-release'
 alias llmwt='infra-llm --worktrees'
 alias llmskill='infra-llm --skill'
 alias llmdesigner='infra-llm --designer'
