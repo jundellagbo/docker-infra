@@ -73,6 +73,7 @@ everything commented out — every setting is optional:
 VERIFY_CMD="<this repo's lint/type-check/test command>"  # unset = no checks
 GIT_GUARD=deny                # ask = confirm each one, off = guard disabled
 GIT_GUARD_ALLOW="tag stash"   # subcommands this repo lets the agent run
+GIT_WINDOW_SECONDS=1800       # PR/release may commit+push this long; 0 = never
 ```
 
 Nothing else is read — a repo has this file or it has no settings. `--init`

@@ -446,11 +446,22 @@ Tune it per repo in `.infra-llm.env` (git-ignored, written by `--init`):
 ```bash
 GIT_GUARD=deny              # default — "ask" prompts the user, "off" disables
 GIT_GUARD_ALLOW="tag stash" # subcommands this repo lets through
+GIT_WINDOW_SECONDS=1800     # how long a PR/release may commit and push; 0 = never
 ```
 
 Destructive commands (force push, `reset --hard`, `clean -fd`, history
 rewriting, `branch -D`, discarding working-tree changes) stay denied in `deny`
 and `ask` mode and can't be allow-listed — only `off` silences them.
+
+**PRs and releases commit and push on their own.** Asking for one *is* asking for
+the commit and the push that make it, so `--pull-request` and `--create-release`
+open a 30-minute window (`plans/.git-window`, git-ignored) in which `commit`,
+`push`, `tag`, `branch` and `merge` are allowed, and the briefs tell the agent to
+do the work and report the URL rather than hand back commands. Nothing to edit
+before, nothing to revert after — the window expires by itself and is deleted on
+the next guarded command. Destructive git stays denied inside it. Set
+`GIT_WINDOW_SECONDS=0` to turn it off (the commands then prepare only), or a
+different number of seconds to widen it.
 
 For the git work the agent *should* help with, `infra-llm --pull-request` and
 `infra-llm --create-release` mirror `--code-review`: a short brief plus the

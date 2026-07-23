@@ -20,10 +20,14 @@ and commits since the last one are under "Scope" below; read them first.
 4. Call out security fixes and dependency updates — the scope flags which
    manifests changed. Note severity and whether installs must upgrade now, or
    say there were none.
-5. Prepare, don't execute: draft the tag, the notes and the commands, then hand
-   them to the user. Releases are their call, and the guard hook denies
-   agent-run git writes.
-6. No AI/LLM attribution in the tag, notes or commits.
+5. Do it — don't hand commands back. Running this command opened a short window
+   in which commit, push and tag are allowed, because asking for a release is
+   asking for those. Commit the version bump, then cut the release with
+   `gh release create` (it creates and pushes the tag). Report the URL.
+6. Destructive git stays blocked and always will be — no force push, no moving
+   an existing tag, no history rewriting. If you think one is needed, stop and
+   say so.
+7. No AI/LLM attribution in the tag, notes or commits.
 
 **Release notes** — grouped by what changed for the user, not by commit order:
 

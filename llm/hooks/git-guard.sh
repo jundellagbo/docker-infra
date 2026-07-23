@@ -15,6 +15,10 @@
 #   GIT_GUARD=off    # guard disabled (destructive commands still denied)
 #   GIT_GUARD_ALLOW="tag stash"   # subcommands to let through in this repo
 #
+# `infra-llm --pull-request` / `--create-release` open a time-boxed window
+# (plans/.git-window) in which commit/push/tag/branch are allowed without any
+# config change, because asking for a PR or a release is asking for those.
+#
 # GIT_GUARD / GIT_GUARD_ALLOW in the environment win over the file, so a repo
 # can be relaxed for one session without editing anything.
 #
@@ -58,6 +62,30 @@ case "$mode" in
   ask|deny)         ;;
   *)                mode="deny" ;;
 esac
+
+# ------------------------------------------------------- authorization window
+#
+# Asking for a pull request or a release IS asking for a commit and a push, so
+# those two commands open a short window here and the agent just does the work -
+# no config to edit, nothing to revert afterwards, and no argument with the
+# guard mid-flow. Everyday git writes outside the window stay denied, and the
+# destructive set below stays denied even inside it.
+window="$proj/plans/.git-window"
+window_open=0
+window_why=""
+if [ -f "$window" ]; then
+  # file holds: <expiry-epoch> <what opened it>
+  read -r w_exp w_why < "$window" 2>/dev/null || true
+  now="$(date +%s 2>/dev/null || echo 0)"
+  case "$w_exp" in
+    ''|*[!0-9]*) rm -f "$window" ;;
+    *) if [ "$now" -lt "$w_exp" ]; then
+         window_open=1; window_why="${w_why:-a workflow command}"
+       else
+         rm -f "$window"   # expired - never leave a stale grant lying around
+       fi ;;
+  esac
+fi
 
 # ----------------------------------------------------------------- matching
 
@@ -105,11 +133,17 @@ if printf '%s' "$cmd" | grep -qE "${git_re}push([[:space:]]+[^[:space:]]+)*[[:sp
   destructive=1
 fi
 
-# Allow-listed for this repo (never for the destructive set)
+# Allow-listed for this repo, or inside the window a PR/release opened. Neither
+# covers the destructive set.
 if [ "$destructive" -eq 0 ]; then
   for ok in $allow; do
     [ "$ok" = "$matched" ] && exit 0
   done
+  if [ "$window_open" -eq 1 ]; then
+    case "$matched" in
+      commit|push|tag|checkout|switch|merge) exit 0 ;;
+    esac
+  fi
 fi
 
 # ------------------------------------------------------------------- decision

@@ -65,7 +65,7 @@ LLM_ENV_FILE=".infra-llm.env"
 # git.sh keeps that older infra-llm function, which shadows the launcher on
 # PATH and answers "unknown command" for anything added since - comparing this
 # against the value in the file on disk is how --doctor catches that.
-LLM_VERSION="2026-07-23.3"
+LLM_VERSION="2026-07-23.4"
 LLM_DOC_START="<!-- infra-llm:start -->"
 LLM_DOC_END="<!-- infra-llm:end -->"
 
@@ -471,6 +471,10 @@ _llm_env_file() {
 
 # Git subcommands this repo lets the agent run anyway, space separated.
 #GIT_GUARD_ALLOW="tag stash"
+
+# How long (seconds) `infra-llm --pull-request` / `--create-release` may commit,
+# push and tag without asking. 0 turns that off and they prepare only.
+#GIT_WINDOW_SECONDS=1800
 ENV
   _llm_ok "wrote    $LLM_ENV_FILE"
 }
@@ -1295,6 +1299,20 @@ _llm_git_repo_ok() {
 
 # Print a brief from llm/templates plus the repo's real state. Read-only: like
 # --code-review, it never runs a repository-mutating git command.
+# Asking for a PR or a release is asking for the commit and the push that make
+# one, so both commands open a short window the git guard honours - no config
+# edit, nothing for the user to revert. Destructive git stays denied throughout.
+_llm_git_window() {
+  local root="$1" why="$2" secs
+  secs="$( [ -f "$root/$LLM_ENV_FILE" ] && ( . "$root/$LLM_ENV_FILE" 2>/dev/null; printf '%s' "${GIT_WINDOW_SECONDS:-}" ) )"
+  case "$secs" in ''|*[!0-9]*) secs=1800 ;; esac
+  [ "$secs" -eq 0 ] && return 0          # GIT_WINDOW_SECONDS=0 opts out
+  mkdir -p "$root/plans" 2>/dev/null || return 0
+  printf '%s %s\n' "$(( $(date +%s) + secs ))" "$why" > "$root/plans/.git-window"
+  printf '\nGit: commit/push/tag are allowed for the next %s minutes (opened by this command).\n' "$((secs / 60))"
+  printf 'Do the work - commit, push, and create it - instead of handing commands back.\n'
+}
+
 _llm_pull_request() {
   local root brief branch base ahead stat
   root="$(_llm_target)"
@@ -1344,6 +1362,7 @@ _llm_pull_request() {
 
   printf '\nVerify gate: `infra-llm --verify`%s\n' \
     "$( grep -qsE '^[[:space:]]*VERIFY_CMD=' "$root/$LLM_ENV_FILE" && printf ' (VERIFY_CMD set in %s)' "$LLM_ENV_FILE" || printf ' (no VERIFY_CMD configured - say so instead of claiming it passed)' )"
+  _llm_git_window "$root" "pull-request"
 }
 
 _llm_create_release() {
@@ -1428,6 +1447,7 @@ _llm_create_release() {
 
   printf '\nVerify gate: `infra-llm --verify`%s\n' \
     "$( grep -qsE '^[[:space:]]*VERIFY_CMD=' "$root/$LLM_ENV_FILE" && printf ' (VERIFY_CMD set in %s)' "$LLM_ENV_FILE" || printf ' (no VERIFY_CMD configured - say so instead of claiming it passed)' )"
+  _llm_git_window "$root" "create-release"
 }
 
 _llm_skill() {

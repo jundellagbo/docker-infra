@@ -97,6 +97,10 @@ weren't there:
 - `GIT_GUARD` / `GIT_GUARD_ALLOW` — guard mode (deny / ask / off) and the
   subcommands this repo lets through. Destructive commands stay denied
   regardless.
+- `GIT_WINDOW_SECONDS` — how long `--pull-request` / `--create-release` may
+  commit, push and tag without asking (default 1800, `0` to prepare only).
+  Asking for a PR is asking for the commit behind it, so those two commands open
+  that window themselves rather than making anyone relax the guard by hand.
 
 ## Environments
 

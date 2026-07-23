@@ -85,8 +85,10 @@ Never put AI/LLM attribution in a commit message, tag, release note or PR body.
 
 Asked for a PR or a release, run `infra-llm --pull-request` /
 `infra-llm --create-release`: each prints its brief plus the repo's real state.
-Follow it — don't duplicate one that already exists, verify first, then
-**prepare** the message, body or notes and hand the user the commands to run.
+Follow it — don't duplicate one that already exists, verify first, then **do the
+work**: those two commands open a short window in which commit, push and tag are
+allowed, so commit and open the PR / cut the release yourself and report the URL.
+Destructive git stays blocked throughout.
 
 Releases are tagged `vMAJOR.MINOR.PATCH`: `v1.0.1` bug fix, `v1.1.0` feature,
 `v2.0.0` breaking. One breaking change makes it a major release however small.
