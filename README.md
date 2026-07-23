@@ -84,6 +84,63 @@ Create a project with the helper:
 
 Visit https://mysite.dev.local
 
+## Host Development Tools (`install.sh`)
+
+On Debian or Ubuntu, `install.sh` can install multiple host PHP versions along
+with Composer, WP-CLI, Node through nvm, Claude Code, and the configured Claude
+MCP servers and plugins:
+
+```bash
+# Install PHP 7.4-8.4 and all tools; PHP 8.3 is the default
+sudo ./install.sh
+
+# Install only the listed PHP versions and make PHP 8.2 the default
+sudo ./install.sh --versions 8.1 8.2 8.3 --default 8.2
+
+# Comma-separated versions are also accepted
+sudo ./install.sh --versions=8.2,8.3,8.4
+```
+
+Optional install flags include `--no-composer`, `--no-wp`, `--no-node`,
+`--no-claude`, `--no-mcp`, and `--no-plugins`. Use `--node-version 20` to
+install a specific Node major instead of the latest LTS release.
+
+Use `phpsw` after installation to list or change the active host PHP CLI and
+FPM version:
+
+```bash
+phpsw
+sudo phpsw 8.2
+```
+
+### Uninstalling Host Tools
+
+Pass one or more component selectors after `--uninstall`. PHP accepts an
+optional list of versions; without versions, `--php` removes every installed
+PHP version detected by the script.
+
+```bash
+# Remove selected PHP versions
+sudo ./install.sh --uninstall --php 8.1 8.2
+
+# Remove all installed PHP versions
+sudo ./install.sh --uninstall --php
+
+# Remove one or more non-PHP components
+sudo ./install.sh --uninstall --claude
+sudo ./install.sh --uninstall --composer --wp --node
+sudo ./install.sh --uninstall --mcp --plugins
+
+# Remove every component managed by install.sh
+sudo ./install.sh --uninstall
+```
+
+Available selectors are `--php`, `--composer`, `--wp` (or `--wpcli`),
+`--node`, `--claude`, `--mcp`, and `--plugins`. Selectors may be combined in a
+single command. Removing Node also removes nvm and its installed Node versions
+for the user who invoked `sudo`. A full uninstall additionally removes the
+`phpsw` helper.
+
 ## Database Credentials
 
 | Database   | User | Password    | Port |

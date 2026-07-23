@@ -4,6 +4,10 @@
 #
 #   sudo ./install.sh                          # 7.4 - 8.4, default 8.3
 #   sudo ./install.sh --versions 8.2 8.3 8.4   # only these (also: --versions=8.2,8.3)
+#   sudo ./install.sh --uninstall --php 8.1 8.2 # uninstall selected PHP versions
+#   sudo ./install.sh --uninstall --claude      # uninstall only Claude Code
+#   sudo ./install.sh --uninstall               # uninstall everything managed here
+#   uninstall selectors: --php --composer --wp --node --claude --mcp --plugins
 #   sudo ./install.sh --default 8.2            # pick the default CLI version
 #   sudo ./install.sh --no-composer --no-wp    # skip the extras
 #   sudo ./install.sh --no-node                # skip Node/nvm
@@ -32,7 +36,7 @@ print_error() { echo -e "${RED}✗ $1${NC}"; }
 print_info() { echo -e "${BLUE}→ $1${NC}"; }
 print_warning() { echo -e "${YELLOW}! $1${NC}"; }
 
-PHP_VERSIONS="7.4 8.0 8.1 8.2 8.3 8.4"
+PHP_VERSIONS="8.3"
 DEFAULT_VERSION="8.3"
 INSTALL_COMPOSER=1
 INSTALL_WPCLI=1
@@ -41,6 +45,15 @@ NODE_VERSION="--lts"
 INSTALL_CLAUDE=1
 INSTALL_MCP=1
 INSTALL_PLUGINS=1
+UNINSTALL_PHP=0
+UNINSTALL_COMPOSER=0
+UNINSTALL_WPCLI=0
+UNINSTALL_NODE=0
+UNINSTALL_CLAUDE=0
+UNINSTALL_MCP=0
+UNINSTALL_PLUGINS=0
+uninstall_selector=0
+UNINSTALL_ALL=0
 
 # --versions takes one or more versions: "--versions 8.2 8.3", --versions=8.2,8.3
 # and --versions "8.2 8.3" all mean the same thing.
@@ -56,6 +69,14 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --versions|-V)      add_versions "$2"; shift ;;
         --versions=*)       add_versions "${1#*=}" ;;
+        --uninstall)        UNINSTALL_MODE=1 ;;
+        --php)              UNINSTALL_PHP=1; uninstall_selector=1 ;;
+        --composer)         UNINSTALL_COMPOSER=1; uninstall_selector=1 ;;
+        --wp|--wpcli)       UNINSTALL_WPCLI=1; uninstall_selector=1 ;;
+        --node)             UNINSTALL_NODE=1; uninstall_selector=1 ;;
+        --claude)           UNINSTALL_CLAUDE=1; uninstall_selector=1 ;;
+        --mcp)              UNINSTALL_MCP=1; uninstall_selector=1 ;;
+        --plugins)          UNINSTALL_PLUGINS=1; uninstall_selector=1 ;;
         --default|-d)       DEFAULT_VERSION="$2"; shift ;;
         --default=*)        DEFAULT_VERSION="${1#*=}" ;;
         --no-composer)      INSTALL_COMPOSER=0 ;;
@@ -80,6 +101,36 @@ if [ -n "$picked_versions" ]; then
     PHP_VERSIONS="${picked_versions# }"
 fi
 
+UNINSTALL_MODE="${UNINSTALL_MODE:-0}"
+
+if [ "$UNINSTALL_MODE" -eq 0 ] && [ "$uninstall_selector" -eq 1 ]; then
+    print_error "component selectors require --uninstall"
+    exit 1
+fi
+
+if [ "$UNINSTALL_MODE" -eq 1 ] && [ "$uninstall_selector" -eq 0 ]; then
+    UNINSTALL_ALL=1
+    UNINSTALL_PHP=1
+    UNINSTALL_COMPOSER=1
+    UNINSTALL_WPCLI=1
+    UNINSTALL_NODE=1
+    UNINSTALL_CLAUDE=1
+    UNINSTALL_MCP=1
+    UNINSTALL_PLUGINS=1
+fi
+
+if [ "$UNINSTALL_MODE" -eq 1 ] && [ -n "$picked_versions" ] && [ "$UNINSTALL_PHP" -eq 0 ]; then
+    print_error "PHP versions require the --php selector"
+    exit 1
+fi
+
+for version in $PHP_VERSIONS; do
+    case "$version" in
+        [0-9].[0-9]|[0-9].[0-9][0-9]) ;;
+        *) print_error "invalid PHP version: $version"; exit 1 ;;
+    esac
+done
+
 if [ "$EUID" -ne 0 ]; then
     print_error "This script must be run with sudo"
     exit 1
@@ -88,6 +139,109 @@ fi
 if ! command -v apt-get >/dev/null 2>&1; then
     print_error "This installer targets Debian/Ubuntu (apt-get not found)"
     exit 1
+fi
+
+TOOL_USER="${SUDO_USER:-root}"
+TOOL_HOME="$(getent passwd "$TOOL_USER" | cut -d: -f6)"
+TOOL_HOME="${TOOL_HOME:-$HOME}"
+run_as_user() { su - "$TOOL_USER" -c "$1"; }
+
+# --------------------------------------------------------------- uninstall PHP
+
+if [ "$UNINSTALL_MODE" -eq 1 ]; then
+    if [ "$UNINSTALL_PLUGINS" -eq 1 ]; then
+        print_info "Uninstalling Claude plugins..."
+        for id in \
+            figma@claude-plugins-official \
+            skill-creator@claude-plugins-official \
+            chrome-devtools-mcp@chrome-devtools-plugins \
+            impeccable@impeccable; do
+            run_as_user "claude plugin uninstall '$id' >/dev/null 2>&1" || true
+        done
+        print_success "Claude plugins uninstalled"
+    fi
+
+    if [ "$UNINSTALL_MCP" -eq 1 ]; then
+        print_info "Unregistering Claude MCP servers..."
+        run_as_user "claude mcp remove -s user figma >/dev/null 2>&1" || true
+        run_as_user "claude mcp remove -s user chrome-devtools >/dev/null 2>&1" || true
+        print_success "Claude MCP servers unregistered"
+    fi
+
+    if [ "$UNINSTALL_PHP" -eq 1 ]; then
+        if [ -z "$picked_versions" ]; then
+            PHP_VERSIONS="$(dpkg-query -W -f='${Package}\n' 'php[0-9].[0-9]-cli' 2>/dev/null \
+                | sed -n 's/^php\([0-9][0-9]*\.[0-9][0-9]*\)-cli$/\1/p' | sort -Vu)"
+        fi
+
+        if [ -z "$PHP_VERSIONS" ]; then
+            print_warning "No PHP versions are installed"
+        fi
+
+    for version in $PHP_VERSIONS; do
+        print_info "Uninstalling PHP ${version}..."
+        pkgs="$(dpkg-query -W -f='${Package}\n' 2>/dev/null | awk -v prefix="php${version}" '
+            $0 == prefix || index($0, prefix "-") == 1
+        ')"
+
+        if [ -z "$pkgs" ]; then
+            print_warning "PHP ${version} is not installed - skipping"
+            continue
+        fi
+
+        # shellcheck disable=SC2086
+        apt-get purge -y -qq $pkgs >/dev/null
+        print_success "PHP ${version} uninstalled"
+    done
+
+    remaining="$(ls -1 /usr/bin/php[0-9].[0-9] 2>/dev/null | sed 's#.*/php##' | sort -V)"
+    if [ -n "$remaining" ]; then
+        fallback="$(printf '%s\n' "$remaining" | tail -1)"
+        if [ -x /usr/local/bin/phpsw ]; then
+            print_info "Switching the default to remaining PHP ${fallback}..."
+            /usr/local/bin/phpsw "$fallback"
+        fi
+        print_info "Remaining PHP versions: $(printf '%s\n' "$remaining" | tr '\n' ' ')"
+    else
+        print_warning "No PHP versions remain installed"
+    fi
+    fi
+
+    if [ "$UNINSTALL_COMPOSER" -eq 1 ]; then
+        print_info "Uninstalling Composer..."
+        rm -f /usr/local/bin/composer /etc/profile.d/composer.sh
+        print_success "Composer uninstalled"
+    fi
+
+    if [ "$UNINSTALL_WPCLI" -eq 1 ]; then
+        print_info "Uninstalling WP-CLI..."
+        rm -f /usr/local/bin/wp /usr/local/bin/wp-cli.phar
+        print_success "WP-CLI uninstalled"
+    fi
+
+    if [ "$UNINSTALL_NODE" -eq 1 ]; then
+        print_info "Uninstalling Node and nvm for ${TOOL_USER}..."
+        rm -rf "${TOOL_HOME}/.nvm"
+        print_success "Node and nvm uninstalled"
+    fi
+
+    if [ "$UNINSTALL_CLAUDE" -eq 1 ]; then
+        print_info "Uninstalling Claude Code for ${TOOL_USER}..."
+        if run_as_user 'command -v claude >/dev/null 2>&1'; then
+            run_as_user 'claude uninstall >/dev/null 2>&1' || print_warning "Claude uninstall command failed"
+        else
+            print_warning "Claude Code is not installed"
+        fi
+        print_success "Claude Code uninstall finished"
+    fi
+
+    if [ "$UNINSTALL_ALL" -eq 1 ]; then
+        rm -f /usr/local/bin/phpsw
+        print_success "phpsw uninstalled"
+    fi
+
+    print_success "Uninstall complete"
+    exit 0
 fi
 
 case " $PHP_VERSIONS " in
@@ -330,11 +484,6 @@ fi
 # nvm, the Claude CLI and its plugins are per-user tools: they install into a
 # home directory and run from a login shell, so target the user who invoked
 # sudo (not root) - that's whose shell will actually use them.
-TOOL_USER="${SUDO_USER:-root}"
-TOOL_HOME="$(getent passwd "$TOOL_USER" | cut -d: -f6)"
-TOOL_HOME="${TOOL_HOME:-$HOME}"
-run_as_user() { su - "$TOOL_USER" -c "$1"; }
-
 # ------------------------------------------------------------------ node / nvm
 
 if [ $INSTALL_NODE -eq 1 ]; then
