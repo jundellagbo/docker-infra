@@ -2,12 +2,16 @@
 # Codex Stop hook adapter: same step protocol as the Claude adapter, but
 # Codex expects {"continue": false, "stopReason": …} to auto-continue.
 cd "${CODEX_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-.}}" || exit 0
-cat > /dev/null  # consume the stdin JSON payload
+PAYLOAD="$(cat)"   # the stdin JSON - the session id in it keeps the stall
+                   # counter per session, so yesterday's count can't silence
+                   # today's auto-continue
+. "$(dirname "$0")/session-id.sh"
+SESSION="$(llm_session_id "$PAYLOAD")"
 
 STATUS=$(bash "$(dirname "$0")/steps-status.sh")
 [ "$STATUS" = "NO_PLAN" ] && exit 0
 
-COUNT=$(bash "$(dirname "$0")/steps-guard.sh" codex)
+COUNT=$(bash "$(dirname "$0")/steps-guard.sh" codex "$SESSION")
 if [ "${COUNT:-0}" -gt 3 ]; then
   exit 0
 fi

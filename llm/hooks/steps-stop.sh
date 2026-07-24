@@ -4,12 +4,16 @@
 # file itself, one step per turn), then requires the final verification
 # (infra-llm --verify) before the session may stop.
 cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
-cat > /dev/null  # consume the stdin JSON payload
+PAYLOAD="$(cat)"   # the stdin JSON - the session id in it keeps the stall
+                   # counter per session, so yesterday's count can't silence
+                   # today's auto-continue
+. "$(dirname "$0")/session-id.sh"
+SESSION="$(llm_session_id "$PAYLOAD")"
 
 STATUS=$(bash "$(dirname "$0")/steps-status.sh")
 [ "$STATUS" = "NO_PLAN" ] && exit 0
 
-COUNT=$(bash "$(dirname "$0")/steps-guard.sh" claude)
+COUNT=$(bash "$(dirname "$0")/steps-guard.sh" claude "$SESSION")
 if [ "${COUNT:-0}" -gt 3 ]; then
   printf '{"systemMessage":"Step-plan hook: no progress after 3 auto-continues; allowing stop. The active plan is still unfinished."}'
   exit 0

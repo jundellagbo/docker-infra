@@ -1609,6 +1609,21 @@ _llm_doctor() {
     fails=$((fails + 1))
   fi
 
+  # A counter at the cap is why auto-continue can go quiet: the stop hook has
+  # given up on this plan for this session. Harmless, but worth seeing.
+  local guard_root guard_file guard_count guard_sess
+  guard_root="$(_llm_target)"
+  for guard_file in "$guard_root/$(_llm_plans_dir "$guard_root")"/.progress-guard-*; do
+    [ -f "$guard_file" ] || continue
+    read -r _ guard_sess guard_count < "$guard_file"
+    case "$guard_sess" in ''|*[!0-9]*) ;; *) guard_count="$guard_sess"; guard_sess="(pre-session format)" ;; esac
+    if [ "${guard_count:-0}" -gt 3 ] 2>/dev/null; then
+      _llm_hm "stall guard at ${guard_count} for $(basename "$guard_file" | sed 's/^\.progress-guard-//') - auto-continue is paused for session ${guard_sess}"
+      _llm_hm "  it resumes on the next session, or when a plan file changes; force it with: rm '$guard_file'"
+      warns=$((warns + 1))
+    fi
+  done
+
   echo ""
   echo "machine-wide install"
   local ghome; ghome="$(_llm_claude_home)"
@@ -1675,10 +1690,18 @@ _llm_doctor() {
     *) _llm_no "steps-status returned: ${out:-<nothing>}"; fails=$((fails + 1)) ;;
   esac
 
-  out="$( cd "$tmp" && bash "$LLM_HOOKS_DIR/steps-guard.sh" doctor 2>/dev/null )"
+  out="$( cd "$tmp" && bash "$LLM_HOOKS_DIR/steps-guard.sh" doctor sess-one 2>/dev/null )"
   case "$out" in
     [0-9]*) printf '  ok       steps-guard (counter: %s)\n' "$out" ;;
     *) _llm_no "steps-guard returned: ${out:-<nothing>}"; fails=$((fails + 1)) ;;
+  esac
+  # A second session must start its own count - otherwise a counter left at the
+  # cap by an earlier session silences auto-continue in every session after it.
+  out="$( cd "$tmp" && bash "$LLM_HOOKS_DIR/steps-guard.sh" doctor sess-two 2>/dev/null )"
+  case "$out" in
+    1) printf '  ok       steps-guard (a new session restarts the count)\n' ;;
+    *) _llm_no "steps-guard did not reset for a new session (got: ${out:-<nothing>})"
+       fails=$((fails + 1)) ;;
   esac
 
   out="$( cd "$tmp" && printf '{"prompt":"work on %s/t.md"}' "$LLM_PLANS_DIR" | bash "$LLM_HOOKS_DIR/plan-prompt.sh" 2>/dev/null | head -1 )"
