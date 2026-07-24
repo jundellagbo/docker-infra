@@ -1,147 +1,94 @@
 ## Step-by-step execution protocol (infra-llm)
 
-Multi-step work in this repo is tracked with `- [ ]` / `- [x]` checkboxes
-**directly in the plan file** under `infra-llm/plans/` (registered in
-`infra-llm/plans/.active-plan`, git-ignored). The hooks that enforce this live
-outside the repo and are driven through the `infra-llm` command, so nothing is
-vendored in here. Run `infra-llm --skill step-plan` for the full protocol.
+Multi-step work is tracked as `- [ ]` / `- [x]` checkboxes **inside the plan file
+itself**, under `infra-llm/plans/` and registered in `.active-plan`. There is no
+separate progress file. The hooks that enforce this live in the infra checkout
+and run through the `infra-llm` command, so nothing is vendored here.
+`infra-llm --skill infra-llm-step` prints the full protocol.
 
-### Commands
+**How to work.** A task with more than one step — or a prompt naming a plan file
+— starts by turning **every** discrete item into its own `- [ ]` checkbox,
+edited into the plan file in place (`infra-llm --plan <slug>` creates and
+registers one for ad-hoc work). Then implement exactly **one** unchecked step per
+turn, mark it `- [x]`, and stop: the Stop hook blocks the stop and hands you the
+next step, so starting it early only makes the turn harder to review. Never batch
+steps and never drop one silently — something unnecessary is marked
+`- [x] … (skipped: reason)`, not deleted. When every box is checked run
+`infra-llm --verify` and fix what it reports until it prints `VERIFY OK`. An
+active plan with unchecked steps is resumed before anything new is started. The
+stop hook gives up after 3 consecutive auto-continues with no progress; if you
+hit that, say what is blocking you instead of spinning.
 
-| Command                    | What it does                                                     |
-| -------------------------- | ---------------------------------------------------------------- |
-| `infra-llm --plan <slug>`  | create `infra-llm/plans/<slug>.md` and register it as active      |
-| `infra-llm --steps`        | the next unchecked step the stop hook will demand                 |
-| `infra-llm --verify`       | run this repo's checks and close out the plan                     |
-| `infra-llm --code-review`  | review brief + the scope of the recent changes                    |
-| `infra-llm --pull-request` | PR brief + this branch's commits, status and existing PR          |
-| `infra-llm --create-release` | release brief + tags, published releases and commits since       |
-| `infra-llm --sessions`     | past session records in `infra-llm/sessions/`                     |
-| `infra-llm --status`       | wiring, active plan, git-guard mode, session count                |
-| `infra-llm --skill <name>` | print a protocol skill (`step-plan`, `llm-workflow`)              |
+| Command | What you get |
+| --- | --- |
+| `infra-llm --plan <slug>` | create `infra-llm/plans/<slug>.md` and register it |
+| `infra-llm --steps` | the next unchecked step the stop hook will demand |
+| `infra-llm --verify` | this repo's checks, then the plan closes out |
+| `infra-llm --code-review` | review brief + the scope of the recent changes |
+| `infra-llm --pull-request` | PR brief + branch, commits, existing PR |
+| `infra-llm --create-release` | release brief + tags, releases, commits since |
+| `infra-llm --status` · `--sessions` · `--skill <name>` | wiring and plan state · past sessions · a protocol skill |
 
-### How to work
+**Writing plans and instructions.** Everything an agent re-reads later — a plan
+file, this block, a skill, a brief — is short, direct and paragraph-first. Say
+what to do and why it matters, then stop; padding is paid for on every future run
+and buries the line that mattered. A plan step is one line naming a concrete
+outcome, with detail underneath only where it isn't obvious, and prose around it
+stays a couple of sentences. Explaining the reason beats stacking MUSTs. Write
+plan files yourself and get on with the work — use the `skill-creator` skill only
+for a **skill, instruction file or command**, whose frontmatter description
+decides whether it ever triggers.
 
-1. When a task has more than one step — or the prompt names a plan file —
-   read the plan and convert **EVERY** discrete item into its own
-   `- [ ]` checkbox, editing the plan file in place. It is the checklist; there
-   is no separate progress file. For ad-hoc work, `infra-llm --plan <slug>`
-   creates and registers one.
-2. Implement exactly **ONE** unchecked step per turn, mark it `- [x]`, then
-   stop. The Stop hook blocks the stop and feeds you the next step, so you
-   never need to start the next one in the same turn.
-3. Never batch steps and never drop one silently — an unnecessary step is
-   marked `- [x] … (skipped: reason)`, not deleted.
-4. When every box is checked, run `infra-llm --verify` and fix what it reports
-   until it prints `VERIFY OK`.
-5. If an active plan still has unchecked steps at the start of a session,
-   resume it before starting anything new.
+**Don't edit what infra-llm generates.** This block (everything between the
+`infra-llm` markers) and any skill or hook it installed are copies: edits are
+lost on the next refresh and never reach the other repos. Change the source in
+the infra checkout and re-run `infra-llm --docs`; if that isn't yours to change,
+say what needs changing instead of patching the copy.
 
-The stop hook gives up after 3 consecutive auto-continues with no progress —
-if you hit that, say what is blocking you instead of spinning.
+**Git is the user's decision.** Never run a repository-mutating git command —
+commit, push, merge, rebase, reset, checkout, branch or tag creation, stash,
+history rewriting. Leave the work in the tree and say what changed. Read-only git
+(`status`, `diff`, `log`, `show`, `blame`) is encouraged. A guard hook enforces
+this; don't route around it with aliases or wrappers. Never put AI/LLM
+attribution in a commit message, tag, release note or PR body.
 
-### Don't edit what infra-llm generates
+**Pull requests and releases** are the exception: run `infra-llm --pull-request`
+or `infra-llm --create-release`, which print their brief plus the repo's real
+state and open a short window in which commit, push and tag are allowed. Follow
+the brief, don't duplicate one that already exists, verify first, then do the
+work and report the URL. Destructive git stays blocked throughout. Releases are
+tagged `vMAJOR.MINOR.PATCH` — `v1.0.1` bug fix, `v1.1.0` feature, `v2.0.0`
+breaking; one breaking change makes it major however small.
 
-This block (everything between the `infra-llm` markers) and any skill or hook
-infra-llm installed are generated copies. Editing them here is lost on the next
-refresh and never reaches the other repos on the same workflow. Change the
-source in the infra checkout and re-run `infra-llm --docs`; if that isn't
-yours to change, say what needs changing instead of patching the copy.
+**Code review** is a separate, on-request activity, not a gate on finishing a
+task. `infra-llm --code-review` prints the brief and the scope of the recent
+changes (pass paths or a git range to review something else). Apply the fix for
+every finding you confirm, then report what you fixed, what you refactored and
+what you left alone.
 
-### Writing plans, instructions and skills
+**Browser work.** Asked to open, inspect, screenshot or debug a page, drive the
+Chrome the user already has open: the `chrome-devtools` MCP server is registered
+with `--autoConnect` and attaches to their logged-in profile, so open a new tab
+there. Never ask which browser or profile to use and never launch a second one.
+Check which browser you got before reporting anything — with remote debugging off
+the server silently attaches to a throwaway profile and every call still
+succeeds, so a page list holding one `about:blank` and none of their tabs means
+you are in that scratch profile. Stop there, say so, and give them the fix: open
+`chrome://inspect/#remote-debugging` (Chrome 144+), enable remote debugging,
+restart Chrome, then restart the agent session. `DevToolsActivePort` is left
+behind when the toggle goes off, so its existence proves nothing, and
+`--remote-debugging-port` is not a workaround — Chrome has ignored it on the
+default user data dir since version 136.
 
-Anything written for an agent to follow later — a plan file, an instruction
-block, a skill, a command brief — is short, specific and imperative. Say what to
-do and why it matters, then stop: padding is re-read on every future run and
-buries the line that mattered. A plan step is one line naming a concrete
-outcome, detail underneath only where it isn't obvious. Explain the reason
-rather than stacking MUSTs; the next agent reads better than it obeys.
+**Codebase memory.** When the `codebase-memory-mcp` tools are available, use them
+to find code — `search_code`, `search_graph`, `trace_path`, `get_code_snippet`
+answer structural questions off an index instead of re-reading files. Index the
+repo once (`index_repository`) and fall back to Grep/Glob when the tools aren't
+there.
 
-Use the `skill-creator` plugin skill when the user asks you to add or rework a
-**skill, instruction file or command** — its frontmatter description is what
-decides whether the thing ever triggers, and that is easy to get wrong by hand.
-
-**Not for plans.** A plan is just the checkbox checklist in `infra-llm/plans/`;
-write it directly and get on with the work — skill-creator's drafting and eval
-loop is pure overhead there.
-
-### Git
-
-**Git state is the user's decision — never run a repository-mutating git
-command** (commit, push, merge, rebase, reset, checkout, branch or tag creation,
-stash, history rewriting). Leave the work in the working tree and say what you
-changed; the user decides when it gets committed. Read-only git (`status`,
-`diff`, `log`, `show`, `blame`) is fine and encouraged.
-
-A guard hook enforces this and denies those commands — don't route around it
-with aliases or wrappers. A repo that wants it relaxed configures that itself;
-destructive commands stay denied regardless.
-
-Never put AI/LLM attribution in a commit message, tag, release note or PR body.
-
-### Pull requests and releases
-
-Asked for a PR or a release, run `infra-llm --pull-request` /
-`infra-llm --create-release`: each prints its brief plus the repo's real state.
-Follow it — don't duplicate one that already exists, verify first, then **do the
-work**: those two commands open a short window in which commit, push and tag are
-allowed, so commit and open the PR / cut the release yourself and report the URL.
-Destructive git stays blocked throughout.
-
-Releases are tagged `vMAJOR.MINOR.PATCH`: `v1.0.1` bug fix, `v1.1.0` feature,
-`v2.0.0` breaking. One breaking change makes it a major release however small.
-
-### Code review
-
-Reviewing is a separate, on-request activity — it is not a gate on finishing a
-task. When the user asks for a review, run `infra-llm --code-review`: it prints
-the review brief (correctness, security, data safety, implementation quality,
-tests) together with the scope of the recent changes. Pass paths or a git range
-to review something else instead.
-
-**Apply the fixes yourself** for every finding you confirm, keeping each fix
-minimal and scoped to the defect. Refactor where the code genuinely needs it —
-optional, behaviour-preserving, confined to the reviewed change, never style
-churn — then report what you fixed, what you refactored, and what you left
-alone and why. Stop and describe instead of applying when a fix would be large,
-risky, or would change intended behaviour — and argue against a finding you
-believe is wrong rather than "fixing" it.
-
-### Browser work — chrome-devtools MCP
-
-Asked to open, inspect, screenshot or debug a page, drive the browser the user
-already has open. The `chrome-devtools` MCP server is registered with
-`--autoConnect`, so it attaches to their running Chrome and its logged-in
-profile — open a new tab there and work in it. Never ask which browser or
-profile to use, and never launch a second one: a fresh profile has none of their
-sessions, so what you see isn't what they see. Prefer the `chrome-devtools`
-server over a plugin-provided duplicate that lacks the flag.
-
-**Check which browser you got, before reporting anything.** The failure is
-silent: when remote debugging is off the server attaches to a throwaway profile
-and every call still succeeds, so a screenshot looks fine while the user is
-staring at a browser you never touched. A page list holding one `about:blank`
-and none of their tabs means you are in that scratch profile. Stop there, say
-so, and give them the fix — a "done" reported from a browser they can't see is
-worse than an error:
-
-1. open `chrome://inspect/#remote-debugging` (needs Chrome 144+)
-2. enable remote debugging, then restart Chrome
-3. restart the agent session so the MCP server reconnects
-
-Being switched off leaves `DevToolsActivePort` behind, so that file existing is
-not evidence the connection works. Relaunching with `--remote-debugging-port`
-isn't a workaround either — Chrome ignores it on the default user data dir since
-version 136.
-
-### Worktrees
-
-`infra-llm/` is untracked, so **every worktree has its own active plan and its
-own session history** — agents in different worktrees run in parallel without
-colliding. Work only in the worktree you were started in: never edit another
-worktree's plan files, and never assume a plan you can't see in this directory. `infra-llm --worktrees` lists every worktree with its
-plan state.
-
-Session records for the last 10 sessions are written to
-`infra-llm/sessions/<session-id>.md`; read them to recover what an earlier
-session was asked to do.
+**Worktrees.** `infra-llm/` is untracked, so every worktree has its own active
+plan and session history and parallel agents don't collide. Work only in the
+worktree you were started in: never edit another worktree's plan files, and never
+assume a plan you can't see here. `infra-llm --worktrees` lists them. Session
+records for the last 10 sessions land in `infra-llm/sessions/<session-id>.md` —
+read them to recover what an earlier session was asked to do.

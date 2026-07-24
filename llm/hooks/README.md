@@ -1,95 +1,53 @@
 # Cross-agent step protocol hooks
 
-Shared machinery for the step-by-step execution protocol. It makes every agent
-— Claude Code, Codex, and anything else that can run a command hook — work one
-step per turn through the plan file being implemented (checkboxes tracked in
-that file itself), auto-continue to the next step, and finish with a
-verification gate.
-
-These scripts stay here in the infra repo — they are never copied into a
-project. `infra-llm --init` only wires a repo's `.claude/settings.json` /
-`.codex/hooks.json` to call `infra-llm --hook <name>`, which dispatches to the
-script below. Editing one changes the behaviour for every wired repo
+Shared machinery for the step-by-step execution protocol: every agent that can
+run a command hook — Claude Code, Codex, anything else — works one step per turn
+through the plan file being implemented, auto-continues to the next step, and
+finishes at a verification gate. These scripts stay here and are never copied
+into a project; a repo only wires `.claude/settings.json` / `.codex/hooks.json`
+to call `infra-llm --hook <name>`, so editing one changes every wired repo
 immediately.
 
-## State
+**State.** `infra-llm/plans/.active-plan` lists one plan-file path per line,
+registered by `plan-prompt.sh` when a prompt references a plan file or by the
+agent for ad-hoc tasks, and cleared by `verify-build.sh` once every registered
+plan is fully checked and the checks pass. There is no separate progress file —
+the plan file IS the checklist, and everything under `infra-llm/` is git-ignored.
 
-`plans/.active-plan` — one plan-file path per line (e.g. `plans/feature.md`).
-Registered automatically by `plan-prompt.sh` when a prompt references a
-`plans/*.md` file, or manually by the agent for ad-hoc tasks. Cleared by
-`verify-build.sh` when every registered plan is fully checked and the checks
-pass. No separate progress file exists — the plan file IS the checklist.
-Everything under `plans/` is git-ignored.
+| Hook | Script | What it does |
+| --- | --- | --- |
+| `prompt` | `plan-prompt.sh` | `UserPromptSubmit` (Claude + Codex): registers plan files named in the prompt and injects the protocol |
+| `stop` | `steps-stop.sh` | Claude `Stop`: returns `{"decision":"block"}` with the next step, or demands verification |
+| `codex-stop` | `codex-stop.sh` | Codex `Stop`: returns `{"continue":false,"stopReason":…}` to auto-continue |
+| `session` | `session-record.sh` | `SessionEnd`: writes `infra-llm/sessions/<id>.md` (date, id, every task asked for), keeping the 10 most recent |
+| `git-guard` | `git-guard.sh` | `PreToolUse(Bash)`: denies agent-run git writes; read-only git and non-git commands pass through |
+| `vexp` | `vexp-guard.sh` | `PreToolUse(Grep\|Glob)`: denies raw text search only while a healthy `vexp` daemon runs |
+| `steps` | `steps-status.sh` | Prints `NO_PLAN`, `UNPLANNED\|<file>`, `REMAINING\|<file>\|<n>\|<next>` or `NEEDS_VERIFY\|<file>` |
+| `verify` | `verify-build.sh` | Runs `VERIFY_CMD` (nothing if unset — no build tool or runtime is assumed) and clears `.active-plan` |
 
-## Shared scripts (`llm/hooks/`, via `infra-llm --hook`)
+`steps-guard.sh <agent>` sits behind the stop hooks as the stall guard: it counts
+consecutive auto-continues with the active plan set unchanged, and the adapters
+give up past 3 so a stuck agent can't loop forever.
 
-| Script                   | Purpose                                                                                                                                    |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `plan-prompt.sh`         | `UserPromptSubmit` adapter (Claude + Codex): detects `plans/*.md` references in the prompt, registers them in `plans/.active-plan`, and injects the protocol. |
-| `steps-status.sh`        | Reads `plans/.active-plan`; prints `NO_PLAN`, `UNPLANNED\|<file>`, `REMAINING\|<file>\|<n>\|<next step>`, or `NEEDS_VERIFY\|<file>`.        |
-| `steps-guard.sh <agent>` | Stall guard: counts consecutive auto-continues with the active plan set unchanged. Adapters give up past 3 so a stuck agent can't loop forever. |
-| `verify-build.sh`        | Runs the repo's own checks (`VERIFY_CMD` from `.infra-llm.env`; nothing at all if unset — no build tool, container runtime or git operation is assumed) and clears `plans/.active-plan` when every step is checked. |
-| `codex-stop.sh`          | Codex Stop-hook adapter — returns `{"continue": false, "stopReason": …}` to auto-continue.                                                  |
+**Per-repo tuning** is one git-ignored file at the repo root, written by
+`infra-llm --init` with everything commented out — `VERIFY_CMD` (unset = no
+checks), `GIT_GUARD` (`deny` / `ask` / `off`) with `GIT_GUARD_ALLOW`, and
+`GIT_WINDOW_SECONDS` (how long a PR/release may commit and push; `0` = never).
+Destructive git stays denied unless the guard is `off`. Nothing else is read, and
+`--init` warns when an older `infra-llm.env` / `.llm-verify.env` / `.llm-git.env`
+is still lying around so its settings can be moved over.
 
-| Hook name (`infra-llm --hook …`) | Script            |
-| -------------------------------- | ------------------ |
-| `prompt`                         | `plan-prompt.sh`   |
-| `stop`                           | `steps-stop.sh`    |
-| `codex-stop`                     | `codex-stop.sh`    |
-| `session`                        | `session-record.sh`|
-| `vexp`                           | `vexp-guard.sh`    |
-| `git-guard`                      | `git-guard.sh`     |
-| `steps` / `verify`               | `steps-status.sh` / `verify-build.sh` |
+**Lifecycle.** A prompt mentions a plan file (or the agent registers one) → it is
+listed in `.active-plan` → the agent converts every discrete item into its own
+`- [ ]` checkbox in place → it implements ONE step, marks it `- [x]` and stops,
+and the stop hook blocks that stop and points at the next unchecked step → with
+every box checked the hook demands `infra-llm --verify`, which on success clears
+`.active-plan`. With no plan registered the stop hooks are silent and the session
+ends normally.
 
-## Claude adapters
-
-| Script              | Purpose                                                                                              |
-| ------------------- | ------------------------------------------------------------------------------------------------------ |
-| `steps-stop.sh`     | `Stop` hook — returns `{"decision": "block", …}` with the next step, or demands verification.          |
-| `session-record.sh` | `SessionEnd` hook — writes `.claude/sessions/<session-id>.md` (date, id, every task asked for); keeps the 10 most recent. |
-| `vexp-guard.sh`     | `PreToolUse(Grep\|Glob)` — denies raw text search only while a healthy `vexp` daemon runs; otherwise allows. |
-| `git-guard.sh`      | `PreToolUse(Bash)` — denies agent-run git writes (commit/push/merge/reset/tag/…); read-only git and non-git commands pass through. Mode per repo via `.infra-llm.env` (`GIT_GUARD=deny\|ask\|off`, `GIT_GUARD_ALLOW`); destructive commands stay denied unless `off`. |
-
-## Per-agent wiring
-
-- **Claude Code** — `.claude/settings.json` registers `SessionEnd`,
-  `UserPromptSubmit`, `Stop` and `PreToolUse` (`Bash` git guard, `Grep|Glob`
-  search guard) hooks, each calling
-  `infra-llm --hook …` guarded by `command -v infra-llm` so a machine without
-  the infra repo is never blocked. Instructions: the block appended to the
-  repo's `CLAUDE.md`, plus `infra-llm --skill step-plan`.
-- **Codex** — `.codex/hooks.json` registers `UserPromptSubmit` →
-  `infra-llm --hook prompt` and `Stop` → `infra-llm --hook codex-stop`.
-  Instructions live in the block appended to `AGENTS.md`. Codex hooks are experimental and disabled on Windows; the
-  `AGENTS.md` protocol still applies without them.
-
-## Per-repo tuning
-
-One file at the repo root, git-ignored, written by `infra-llm --init` with
-everything commented out — every setting is optional:
-
-```bash
-# .infra-llm.env
-VERIFY_CMD="<this repo's lint/type-check/test command>"  # unset = no checks
-GIT_GUARD=deny                # ask = confirm each one, off = guard disabled
-GIT_GUARD_ALLOW="tag stash"   # subcommands this repo lets the agent run
-GIT_WINDOW_SECONDS=1800       # PR/release may commit+push this long; 0 = never
-```
-
-Nothing else is read — a repo has this file or it has no settings. `--init`
-warns when an older `infra-llm.env` / `.llm-verify.env` / `.llm-git.env` is
-still lying around so its settings can be moved over.
-
-## Lifecycle of a task
-
-1. A prompt mentions `plans/feature.md` (or the agent registers a plan itself)
-   → the file is listed in `plans/.active-plan`.
-2. The agent converts every discrete item in the plan file into its own `- [ ]`
-   checkbox, in place.
-3. The agent implements ONE step, marks it `- [x]`, stops; the stop hook blocks
-   the stop and points at the next unchecked step.
-4. When all steps are checked, the stop hook demands
-   `infra-llm --verify`; on success the script clears
-   `plans/.active-plan`.
-5. With no active plan registered, the step stop hooks are silent and the
-   session ends normally.
+**Wiring.** Claude Code registers `SessionEnd`, `UserPromptSubmit`, `Stop` and
+both `PreToolUse` guards in `.claude/settings.json`; Codex registers
+`UserPromptSubmit` → `prompt` and `Stop` → `codex-stop` in `.codex/hooks.json`
+(its hooks are experimental and disabled on Windows — the `AGENTS.md` protocol
+still applies without them). Every entry is guarded by `command -v infra-llm`, so
+a machine without the infra checkout is never blocked by a hook it can't run.

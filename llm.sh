@@ -2,19 +2,18 @@
 
 # Shared LLM/agent workflow - the companion to git.sh.
 #
-# The workflow (plan protocol, step stop-hooks, session records, vexp search
-# guard) lives HERE in the infra repo under llm/ and is never vendored into a
-# project. A project only gets: hook wiring that calls the "infra-llm" command,
-# and an instruction block appended to its own CLAUDE.md / AGENTS.md / GEMINI.md
-# telling the agent which commands to use.
+# The workflow (plan protocol, step stop-hooks, session records, git and search
+# guards) lives HERE under llm/ and is never vendored into a project. A repo
+# gets only hook wiring that calls the "infra-llm" command, plus an instruction
+# block in its own CLAUDE.md / AGENTS.md / GEMINI.md.
 #
-#   infra-llm --init            # this repo's own state: plans/, sessions, ignores
 #   infra-llm --global          # wire every repo on this machine, once
-#   infra-llm --agent           # wire THIS repo (hooks + instructions + command)
-#   infra-llm --docs            # re-append/refresh only the instruction blocks
+#   infra-llm --init            # this repo: state dirs, ignores, instructions
+#   infra-llm --agent           # wire THIS repo instead (hooks + all agents)
+#   infra-llm --docs            # refresh only the instruction blocks
 #   infra-llm --status          # wiring + active plan + session records
 #   infra-llm --doctor          # does this machine (Linux/macOS/WSL) support it?
-#   infra-llm --plan <slug>     # create plans/<slug>.md and register it
+#   infra-llm --plan <slug>     # create infra-llm/plans/<slug>.md and register it
 #   infra-llm --steps           # what the stop hook thinks the next step is
 #   infra-llm --verify [args]   # run the verification gate
 #   infra-llm --sessions [id]   # list/print session records
@@ -22,24 +21,33 @@
 #   infra-llm --pull-request    # PR brief + branch/commit/PR state
 #   infra-llm --create-release  # release brief + tag/release state
 #   infra-llm --worktrees       # every worktree with its own plan state
-#   infra-llm --skill [name]    # print a protocol skill (step-plan, llm-workflow)
-#   infra-llm --designer        # add the design-review skill (--remove to drop it)
+#   infra-llm --skill [name]    # print a skill (infra-llm-step/-workflow/-design)
+#   infra-llm --designer        # add the design skill here (--remove to drop it)
 #   infra-llm --hook <name>     # run a hook (used by the wiring, not by hand)
 #   infra-llm --uninstall       # remove wiring + instruction blocks again
 #
-# Three commands, three scopes:
+# Three scopes. --global installs the machine-wide layer into Claude Code's own
+# config dir ($CLAUDE_CONFIG_DIR, else ~/.claude): the hooks, the /infra-llm
+# command and the three skills (infra-llm-step, infra-llm-workflow,
+# infra-llm-design). Claude Code reads them in every project, so updating this
+# checkout updates every repo. --init prepares one repo: infra-llm/ (plans and
+# sessions), .infra-llm.env, the ignore entries that keep both out of git and
+# out of any other ignore file the repo already has (appended to, never
+# created), and the instruction block. --agent wires the repo to carry the
+# hooks itself - for a machine with no --global install, or a repo teammates and
+# CI clone and must get the workflow with.
 #
-#   --init    this repo's own state - infra-llm/ (plans + sessions) and
-#             .infra-llm.env (VERIFY_CMD is per repo), plus the entries that
-#             keep both out of git and out of any other ignore file the repo
-#             already has (.dockerignore, .npmignore, ... - appended to, never
-#             created). Nothing else: no hooks, no instruction block, no
-#             command.
-#   --global  the workflow itself, once per machine, in Claude Code's config dir
-#             (see below) - every repo is covered without being touched.
-#   --agent   the workflow wired into THIS repo instead. Only needed when there
-#             is no machine-wide install, or when teammates and CI clone the repo
-#             and must get the workflow with it.
+# The instruction block is per repo on purpose: it travels with the clone, where
+# a machine-wide CLAUDE.md applied to every project whether or not it used the
+# workflow. An earlier install's copy is removed by the next --global.
+#
+#   infra-llm --global                     # install or refresh all of it
+#   infra-llm --global --no-designer       # ... without infra-llm-design
+#   infra-llm --global --no-git-guard      # ... without the git guard
+#   infra-llm --global --no-hooks          # command + skills only
+#   infra-llm --global --no-commands       # ... no /infra-llm command
+#   infra-llm --global --no-skill          # ... no skills at all
+#   infra-llm --global --remove            # take all of it back out
 #
 # --agent inspects the repo for every LLM setup it knows (Claude Code, Codex,
 # Cursor, Windsurf, Copilot, Gemini, Cline/Roo, Aider) and offers a selection -
@@ -48,45 +56,17 @@
 #
 #   infra-llm --agent --claude --cursor    # explicit (one flag per agent)
 #   infra-llm --agent --all --yes          # everything, no prompt
-#   infra-llm --agent                      # an out-of-date block is refreshed
-#   infra-llm --agent --force              # rewrite it even when already current
+#   infra-llm --agent --force              # rewrite a block already current
 #   infra-llm --agent --no-git-guard       # skip the git guard (--no-vexp likewise)
 #   infra-llm --agent --no-commands        # generate no slash command at all
 #   infra-llm --agent --no-docs            # hooks and plan state only, no block
 #
-# --global installs the whole workflow once, into Claude Code's own config dir
-# ($CLAUDE_CONFIG_DIR, else ~/.claude): the instruction block, the hooks, the
-# /infra-llm command and the two workflow skills (step-plan, llm-workflow).
-# Claude Code reads all of them in every project, so no repo needs --init at all
-# and updating this checkout is what updates every repo. Re-running is cheap and
-# idempotent - each piece is compared first and rewritten only when it differs.
-# Same paths on Linux, macOS, WSL and Git Bash.
-#
-# design-review is NOT part of it: it pulls in impeccable, the emilkowalski
-# skills and the chrome-devtools MCP, which is a per-repo choice rather than
-# something every project wants. "infra-llm --designer" installs it in one repo,
-# "--global --designer" everywhere.
-#
-#   infra-llm --global                     # install or refresh all of it
-#   infra-llm --global --designer          # ... plus the design-review skill
-#   infra-llm --global --no-git-guard      # ... without the git guard
-#   infra-llm --global --no-hooks          # instructions + command + skills only
-#   infra-llm --global --no-commands       # ... no /infra-llm command
-#   infra-llm --global --no-skill          # ... no skills at all
-#   infra-llm --global --remove            # take all of it back out
-#
 # Don't wire both layers. Claude Code MERGES user-level and project-level hooks
-# rather than letting one win, so a repo that also ran --init fires every hook
-# twice - two stop decisions, the protocol injected twice. --status and --doctor
-# warn when they see it; 'infra-llm --uninstall' in the repo is the way back.
-#
-# What this does NOT cover: user-level hooks fire in EVERY project on the
-# machine, git guard included, so opt out if that is not what you want. It is
-# Claude-only (no other agent reads a user-level file), it is this machine only
-# (teammates and CI see nothing), and per-repo state - infra-llm/ and
-# .infra-llm.env - is still per repo, created on demand. --init stays the answer
-# for a repo that must carry its own wiring; pair it with --no-docs to keep the
-# hooks while the instructions come from the global block.
+# rather than letting one win, so a repo wired with --agent on a machine that
+# also ran --global fires every hook twice. --status and --doctor warn when they
+# see it; 'infra-llm --uninstall' in the repo is the way back. And note the
+# machine-wide hooks fire in EVERY project here, git guard included; it is
+# Claude-only, and this machine only.
 #
 # Source it from a shell for the short aliases - commands.sh loads it, and
 # git.sh pulls it in too:
@@ -129,7 +109,14 @@ LLM_SESSIONS_DIRS_OLD="infra-llm-sessions .claude/sessions"
 # git.sh keeps that older infra-llm function, which shadows the launcher on
 # PATH and answers "unknown command" for anything added since - comparing this
 # against the value in the file on disk is how --doctor catches that.
-LLM_VERSION="2026-07-24.1"
+LLM_VERSION="2026-07-24.2"
+# Skills are installed under their directory name, prefixed so every piece of
+# this workflow sorts together in a Claude config dir shared with other skills.
+# The names they were installed under before the prefix - removed on sight, or
+# Claude Code loads the same protocol twice under two names.
+LLM_SKILLS_OLD="step-plan llm-workflow design-review"
+# The generated design skill (not copied from llm/skills - it is a heredoc)
+LLM_DESIGN_SKILL="infra-llm-design"
 LLM_DOC_START="<!-- infra-llm:start -->"
 LLM_DOC_END="<!-- infra-llm:end -->"
 
@@ -723,26 +710,18 @@ description: Run an infra-llm workflow command - review, pr, release, plan, step
 ---
 
 <!-- infra-llm:generated -->
-Generated by `infra-llm --agent`. Don't edit this file - a re-run overwrites it;
-change it in the infra checkout instead.
+Generated by infra-llm. Don't edit this file - a re-run overwrites it; change it
+in the infra checkout instead.
 
-Run `infra-llm $ARGUMENTS` and act on what it prints:
-
-| Argument             | What you get                                          |
-| -------------------- | ----------------------------------------------------- |
-| `review`             | review brief + the scope of the recent changes - verify each finding, then fix it |
-| `pr`                 | pull-request brief + branch, commits and any existing PR - follow it |
-| `release [version]`  | release brief + tags, releases and commits since - follow it |
-| `plan <slug>`        | creates and registers a plan - then fill it with one checkbox per step |
-| `steps`              | the next unchecked step of the active plan            |
-| `verify`             | this repo's checks - fix what it reports until it prints VERIFY OK |
-| `status`             | wiring, active plan, git guard, sessions              |
-| `sessions [id]`      | recorded session histories                            |
-| `worktrees`          | every worktree with its own plan state                |
-| `doctor`             | whether this machine can run the workflow             |
-
-With no argument it prints the status. For anything that prints a brief, follow
-that brief rather than improvising - it carries the repo's real state.
+Run `infra-llm $ARGUMENTS` and act on what it prints. `review`, `pr` and
+`release [version]` each print a brief plus this repo's real state - follow that
+brief rather than improvising, verify every finding before acting on it, and
+don't duplicate a PR or tag that already exists. `plan <slug>` creates and
+registers a plan for you to fill with one checkbox per step; `steps` names the
+next unchecked one; `verify` runs this repo's checks, so fix what it reports
+until it prints `VERIFY OK`. `status` (the default with no argument), `sessions
+[id]`, `worktrees` and `doctor` report wiring and plan state, past sessions, each
+worktree's plan, and whether this machine can run the workflow at all.
 CMD
 }
 
@@ -917,20 +896,24 @@ _llm_repo_state() {
   return 0
 }
 
-# Repo state only. The hooks, instruction blocks and /infra-llm command come
-# from --global (machine-wide) or --agent (this repo alone).
+# Repo state plus the instruction block. The hooks and the /infra-llm command
+# come from --global (machine-wide) or --agent (this repo alone); the block is
+# written here because it belongs to the repo - it travels to teammates and CI,
+# and a machine-wide copy would apply to projects that never asked for it.
 _llm_init_state() {
-  local root="" arg
+  local root="" force=0 want_docs=1 arg
   for arg in "$@"; do
     case "$arg" in
-      # These used to be --init's, and doing half of what they ask - the state
-      # without the wiring - would look like it worked. Say where they moved.
+      # These wire an agent's hooks; doing half of it here would look like it
+      # worked. Say where they moved.
       --all|--claude|--codex|--cursor|--windsurf|--copilot|--gemini|--cline|--aider|\
-      --no-vexp|--no-git-guard|--no-git|--no-commands|--no-command|--no-docs|--no-instructions)
+      --no-vexp|--no-git-guard|--no-git|--no-commands|--no-command)
         _llm_no "$arg wires an agent into the repo - that moved to: infra-llm --agent $*"
-        _llm_hm "--init now prepares repo state only ($LLM_PLANS_DIR/, $LLM_SESSIONS_DIR/, .gitignore, $LLM_ENV_FILE)"
+        _llm_hm "--init prepares repo state and the instruction block, nothing else"
         return 1 ;;
-      -y|--yes|-f|--force) ;;   # harmless here, accepted so scripts don't break
+      --no-docs|--no-instructions) want_docs=0 ;;
+      -f|--force) force=1 ;;
+      -y|--yes) ;;              # harmless here, accepted so scripts don't break
       -*) _llm_no "unknown option: $arg"; return 1 ;;
       *)  root="$arg" ;;
     esac
@@ -940,16 +923,22 @@ _llm_init_state() {
 
   _llm_c "preparing repo state in $root"
   _llm_repo_state "$root"
+  local doc=""
+  if [ "$want_docs" -eq 1 ]; then
+    doc="$(_llm_agent_doc "$root" claude)"
+    _llm_doc_block "$root" "$doc" "$force" claude
+  fi
   echo ""
   _llm_ok "repo ready"
   printf '  plans:    %-18s (plan files + .active-plan, git-ignored)\n' "$(_llm_plans_dir "$root")/"
   printf '  sessions: %-18s (one file per session, last 10)\n' "$(_llm_sessions_dir "$root")/"
   echo "  tune:     $LLM_ENV_FILE     (VERIFY_CMD, git guard - all optional)"
+  [ -n "$doc" ] && printf '  docs:     %-18s (the protocol, between the infra-llm markers)\n' "$doc"
   printf '  ignored:  %s\n' "$(_llm_ignored_in "$root")"
   echo ""
-  echo "  hooks and instructions come from:"
+  echo "  hooks come from:"
   echo "    infra-llm --global   every repo on this machine (one install)"
-  echo "    infra-llm --agent    this repo only (wired into the repo itself)"
+  echo "    infra-llm --agent    this repo only, plus blocks for other agents"
   return 0
 }
 
@@ -1076,18 +1065,14 @@ _llm_claude_home_label() {
   esac
 }
 
-# Claude Code reads CLAUDE.md from its config dir in every project, so one block
-# there covers every repo on this machine: update the infra checkout and the
-# next session picks it up, with no --init sweep across repos. Claude-only - no
-# other agent has a user-level instruction file - and repos shared with
-# teammates still want their own block, which is why --init keeps writing one.
-# The protocol skills (step-plan, llm-workflow) live in the infra checkout and
-# `infra-llm --skill <name>` prints them on demand. Copied under the Claude
-# config dir they load on their own instead - their descriptions are written for
-# exactly that ("use at the START of any task with more than one step"), and an
-# agent that never runs the command still gets the protocol.
+# The protocol skills live in the infra checkout and `infra-llm --skill <name>`
+# prints them on demand. Copied under the Claude config dir they load on their
+# own instead - their descriptions are written for exactly that ("use at the
+# START of any task with more than one step"), so an agent that never runs the
+# command still gets the protocol, in every project on this machine.
 _llm_install_protocol_skills() {
   local home="$1" label="${2:-$1}" src name dest
+  _llm_remove_old_skills "$home" "$label"
   for src in "$LLM_SKILLS_DIR"/*/SKILL.md; do
     [ -f "$src" ] || continue
     name="$(basename "$(dirname "$src")")"
@@ -1103,11 +1088,28 @@ _llm_install_protocol_skills() {
   return 0
 }
 
+# Drop the pre-prefix installs (step-plan, llm-workflow, design-review). Left
+# there they load alongside the renamed ones and Claude Code sees the same
+# protocol twice. Only ours go: a directory holding anything else is left alone.
+_llm_remove_old_skills() {
+  local home="$1" label="${2:-$1}" name dir
+  for name in $LLM_SKILLS_OLD; do
+    dir="$home/skills/$name"
+    [ -f "$dir/SKILL.md" ] || continue
+    grep -qE '^name: (step-plan|llm-workflow|design-review)$' "$dir/SKILL.md" 2>/dev/null || continue
+    rm -f "$dir/SKILL.md"
+    rmdir "$dir" 2>/dev/null || true
+    _llm_ok "replaced $label/skills/$name/ (renamed with the infra-llm- prefix)"
+  done
+  return 0
+}
+
 # Take the copies back out - but only while they still match the checkout. An
 # edited copy is the user's now, and deleting someone's edited skill to "clean
 # up" is worse than leaving a file behind: say so and move on.
 _llm_remove_protocol_skills() {
   local home="$1" label="${2:-$1}" src name dest
+  _llm_remove_old_skills "$home" "$label"
   for src in "$LLM_SKILLS_DIR"/*/SKILL.md; do
     [ -f "$src" ] || continue
     name="$(basename "$(dirname "$src")")"
@@ -1139,19 +1141,16 @@ _llm_double_wired_warn() {
 }
 
 # What is installed machine-wide, as one line: which pieces are in place, and
-# whether the instruction block still matches the template.
+# which no longer match the checkout.
 _llm_global_state() {
-  local home label parts="" doc=""
+  local home label parts=""
   home="$(_llm_claude_home)"
   label="$(_llm_claude_home_label)"
 
+  # A CLAUDE.md block here is from before the instructions moved into --init;
+  # say so rather than counting it as part of the install.
   if [ -f "$home/CLAUDE.md" ] && grep -qF "$LLM_DOC_START" "$home/CLAUDE.md" 2>/dev/null; then
-    if [ "$(_llm_doc_installed "$home/CLAUDE.md")" = "$(_llm_trim_blanks < "$LLM_TEMPLATE")" ]; then
-      doc="instructions"
-    else
-      doc="instructions(OUT OF DATE - run: infra-llm --global)"
-    fi
-    parts="$doc"
+    parts="CLAUDE.md(LEGACY - the block moved to the repo; run: infra-llm --global)"
   fi
   [ -f "$home/settings.json" ] && grep -q "infra-llm --hook" "$home/settings.json" 2>/dev/null \
     && parts="$parts hooks"
@@ -1168,12 +1167,12 @@ _llm_global_state() {
     if cmp -s "$src" "$dest"; then parts="$parts $name"
     else parts="$parts $name(STALE)"; fi
   done
-  # design-review is generated rather than copied, so it is checked separately
-  if [ -f "$home/skills/design-review/SKILL.md" ]; then
-    if [ "$(cat "$home/skills/design-review/SKILL.md")" = "$(_llm_designer_skill_md)" ]; then
-      parts="$parts design-review"
+  # The design skill is generated rather than copied, so it is checked separately
+  if [ -f "$home/skills/$LLM_DESIGN_SKILL/SKILL.md" ]; then
+    if [ "$(cat "$home/skills/$LLM_DESIGN_SKILL/SKILL.md")" = "$(_llm_designer_skill_md)" ]; then
+      parts="$parts $LLM_DESIGN_SKILL"
     else
-      parts="$parts design-review(STALE)"
+      parts="$parts $LLM_DESIGN_SKILL(STALE)"
     fi
   fi
 
@@ -1185,7 +1184,7 @@ _llm_global_state() {
 }
 
 _llm_global() {
-  local force=0 remove=0 want_vexp=1 want_git=1 want_hooks=1 want_cmds=1 want_skill=1 want_designer=0 home label file="CLAUDE.md"
+  local force=0 remove=0 want_vexp=1 want_git=1 want_hooks=1 want_cmds=1 want_skill=1 want_designer=1 home label file="CLAUDE.md"
   while [ $# -gt 0 ]; do
     case "$1" in
       -f|--force)                     force=1 ;;
@@ -1195,7 +1194,8 @@ _llm_global() {
       --no-hooks)                     want_hooks=0 ;;
       --no-commands|--no-command)     want_cmds=0 ;;
       --no-skill|--no-skills)         want_skill=0 ;;
-      --designer|--design-review)     want_designer=1 ;;
+      --no-designer|--no-design|--no-design-review) want_designer=0 ;;
+      --designer|--design-review)     want_designer=1 ;;   # now the default, kept for scripts
       -*) _llm_no "unknown option: $1"; return 1 ;;
     esac
     shift
@@ -1208,7 +1208,7 @@ _llm_global() {
     [ -f "$home/$file" ] && grep -qF "$LLM_DOC_START" "$home/$file" 2>/dev/null && found=1
     [ -f "$home/settings.json" ] && grep -q "infra-llm --hook" "$home/settings.json" 2>/dev/null && found=1
     [ -f "$home/commands/infra-llm.md" ] && found=1
-    [ -f "$home/skills/design-review/SKILL.md" ] && found=1
+    [ -f "$home/skills/$LLM_DESIGN_SKILL/SKILL.md" ] && found=1
     local s
     for s in "$LLM_SKILLS_DIR"/*/SKILL.md; do
       [ -f "$s" ] || continue
@@ -1238,7 +1238,16 @@ _llm_global() {
   _llm_c "installing the workflow into $label  [every repo on this machine]"
   _llm_assets_ok || return 1
   _llm_install_cli "$force"
-  _llm_doc_block "$home" "$file" "$force" claude || return 1
+
+  # No CLAUDE.md here any more. A machine-wide instruction block applied to
+  # every project whether or not it uses the workflow, and it was the one piece
+  # a repo could not carry to a teammate - so the block is what `--init` writes
+  # into the repo instead. An earlier install's copy is taken back out.
+  if [ -f "$home/$file" ] && grep -qF "$LLM_DOC_START" "$home/$file" 2>/dev/null; then
+    _llm_doc_strip "$home" "$file"
+    [ -z "$(tr -d '[:space:]' < "$home/$file")" ] && rm -f "$home/$file"
+    _llm_hm "the instruction block now comes from 'infra-llm --init' in each repo"
+  fi
 
   # User-level hooks fire in every project Claude Code opens here, not just the
   # wired ones - the git guard included. --no-git-guard / --no-vexp / --no-hooks
@@ -1252,10 +1261,9 @@ _llm_global() {
   # only once instead of in each repo.
   [ "$want_cmds" -eq 1 ] && _llm_install_commands "$home" 1 "$label/commands"
 
-  # step-plan and llm-workflow are the workflow itself, so they come along. The
-  # design-review skill is not: it pulls in impeccable, the emilkowalski skills
-  # and the chrome-devtools MCP, which is a choice per repo - "--global
-  # --designer" opts into it everywhere, "infra-llm --designer" into one repo.
+  # All three skills come along: the protocol pair from llm/skills, plus the
+  # generated design skill, which only loads when a task is actually about UI.
+  # --no-designer leaves that one out.
   if [ "$want_skill" -eq 1 ]; then
     _llm_install_protocol_skills "$home" "$label"
     [ "$want_designer" -eq 1 ] && _llm_designer --at "$home" "$label"
@@ -1269,11 +1277,10 @@ _llm_global() {
       echo "  hooks:  machine-wide, git guard skipped"
     fi
   else
-    echo "  hooks:  none (instruction block only)"
+    echo "  hooks:  none (command and skills only)"
   fi
+  echo "  docs:   run 'infra-llm --init' in a repo for its instruction block"
   echo "  note:   Claude Code only - other agents still need a per-repo block"
-  [ "$want_skill" -eq 1 ] && [ "$want_designer" -eq 0 ] && \
-    echo "  design: design-review not installed (optional) - add it with --global --designer"
   echo "  remove: infra-llm --global --remove"
 }
 
@@ -1297,7 +1304,7 @@ _llm_uninstall() {
   done
   _llm_doc_strip "$root" ".claude/CLAUDE.md"
 
-  # Skills we generated here go too - design-review, and any protocol skill a
+  # Skills we generated here go too - the design skill, and any protocol skill a
   # --global-style install left in the repo. Same terms as the global sweep: an
   # edited copy is the repo's own now and is reported rather than deleted.
   _llm_designer --remove --at "$root/.claude" ".claude"
@@ -1309,75 +1316,66 @@ _llm_uninstall() {
 
 # -------------------------------------------------------------------- designer
 
-# The "design-review" project skill this drops into a repo. It tells the agent
+# The infra-llm-design project skill this drops into a repo. It tells the agent
 # to validate UI/design work with the impeccable + emilkowalski design skills
 # and the chrome-devtools MCP instead of eyeballing the result. Kept as a
 # heredoc (like the settings JSON) so there is nothing extra to vendor.
 _llm_designer_skill_md() {
   cat <<'SKILL'
 ---
-name: design-review
+name: infra-llm-design
 description: >-
-  Use when building, changing, polishing, or reviewing any UI / visual /
-  front-end work - a page, component, layout, styling, animation, or "make this
-  look better / less like AI slop". Drives testing and validation of the design
-  through the impeccable and emilkowalski design skills and the chrome-devtools
-  MCP, instead of eyeballing the result.
+  Validate UI work instead of eyeballing it - audit with impeccable, review
+  motion with the emilkowalski design skills, then see it running in the user's
+  own browser through the chrome-devtools MCP. Use this whenever a task builds,
+  changes, polishes or reviews anything visual: a page, component, layout,
+  styling, animation, responsive or accessibility pass, or "make this look
+  better / less like AI slop".
 ---
 
 # Design review & validation
 
-<!-- Generated by `infra-llm --designer`. Don't edit this file: a re-run
-     overwrites it. Change it in the infra checkout instead. -->
+<!-- Generated by `infra-llm --designer` / `--global`. Don't edit this file: a
+     re-run overwrites it. Change it in the infra checkout instead. -->
 
 "It renders" is not done. When a change touches UI, styling, layout or motion,
-validate it instead of eyeballing it.
+validate it in three passes and report what you deliberately left alone.
 
-## 1. Audit the design - impeccable
+**Audit — impeccable.** Run the `impeccable` skill (or its no-LLM scanner, `npx
+impeccable detect <path>`) over the changed UI for typography, colour, spacing,
+layout and motion anti-patterns. The scanner covers the common web markup/CSS
+formats; server-rendered template languages have to be told which extensions to
+scan, and it judges markup and CSS, not backend logic.
 
-Run the `impeccable` skill (or its no-LLM scanner, `npx impeccable detect
-<path>`) over the changed UI to catch typography, colour, spacing, layout and
-motion anti-patterns. The scanner covers the common web markup/CSS formats; for
-server-rendered template languages it has to be told which extensions to scan,
-and it judges the markup and CSS, not the backend logic. Fix what it flags and
-say what you deliberately left alone.
+**Motion — emilkowalski/skills.** For anything animated or interactive, review
+easing, duration, physicality, interruptibility, performance and accessibility
+with the emilkowalski design-engineering skills rather than inventing curves.
 
-## 2. Review the motion - emilkowalski/skills
+**Live — chrome-devtools MCP.** Load the running UI in a real browser:
+screenshot it, inspect computed styles, spacing and contrast on the actual
+elements, check the console and network for new errors, and run a
+performance/accessibility pass when those matter. Iterate until the rendered
+page matches what the audit asked for. Use the browser the user already has
+open — the `chrome-devtools` server is registered with `--autoConnect`, so it
+attaches to their running Chrome and logged-in profile; open a new tab there,
+never ask which browser or profile to use, never start a second one, and prefer
+that server over any plugin-provided duplicate, which launches its own empty
+profile.
 
-For anything animated or interactive, review easing, duration, physicality,
-interruptibility, performance and accessibility with the emilkowalski
-design-engineering skills rather than inventing curves.
-
-## 3. Validate live - chrome-devtools MCP
-
-Load the running UI in a real browser: screenshot the result, inspect computed
-styles, spacing and contrast on the actual elements, check the console and
-network for new errors, and run a performance/accessibility pass when those
-matter. Iterate until the rendered page matches what the audit asked for.
-
-Use the browser the user already has open. The `chrome-devtools` MCP server is
-registered with `--autoConnect`, so it attaches to their running Chrome and
-their logged-in profile - open a new tab there and work in it. Never ask which
-browser or profile to use, never start a second profile, and prefer the
-`chrome-devtools` server over any plugin-provided duplicate, which launches its
-own empty one.
-
-Check which browser you got before reporting anything. When remote debugging is
-off the server falls back to a throwaway profile and every call still succeeds -
-so the screenshot looks fine while the user stares at a browser you never
-touched. A page list holding one `about:blank` and none of their tabs means you
-are in that scratch profile: stop, say so, and give them the fix.
-
-1. open `chrome://inspect/#remote-debugging` (needs Chrome 144+)
-2. enable remote debugging, then restart Chrome
-3. restart the agent session so the MCP server reconnects
+Check which browser you got before reporting anything. With remote debugging off
+the server falls back to a throwaway profile and every call still succeeds, so
+the screenshot looks fine while the user stares at a browser you never touched.
+A page list holding one `about:blank` and none of their tabs means you are in
+that scratch profile: stop, say so, and give them the fix — open
+`chrome://inspect/#remote-debugging` (Chrome 144+), enable remote debugging,
+restart Chrome, then restart the agent session so the MCP server reconnects.
 
 Done means: no unaddressed anti-patterns, motion reviewed, and the change seen
 working in the user's own browser with no new console or network errors.
 SKILL
 }
 
-# Generate the design-review skill where Claude Code auto-loads it: a repo's
+# Generate the design skill where Claude Code auto-loads it: a repo's
 # .claude/skills, or the config dir's skills/ when --global installs it for
 # every project. --remove / -r tears it down again.
 #
@@ -1385,7 +1383,7 @@ SKILL
 # output. Called with no target it works on the current repo, as before.
 _llm_designer() {
   local root name dir file remove=0 at="" label=""
-  name="design-review"
+  name="$LLM_DESIGN_SKILL"
   while [ $# -gt 0 ]; do
     case "$1" in
       -r|--remove|remove|--uninstall) remove=1 ;;
@@ -1407,7 +1405,7 @@ _llm_designer() {
 
   if [ "$remove" -eq 1 ]; then
     if [ ! -e "$file" ] && [ ! -d "$dir" ]; then
-      _llm_hm "no design-review skill in $label - nothing to remove"
+      _llm_hm "no $LLM_DESIGN_SKILL skill in $label - nothing to remove"
       return 0
     fi
     # --global sweeps this up on the way past (older runs installed it), so an
@@ -1857,11 +1855,11 @@ _llm_plan() {
     cat > "$root/$file" <<EOF
 # ${slug}
 
-Every discrete item below is one step. The agent implements ONE per turn and
-marks it - [x] here; the stop hook advances to the next.
-
-Keep each step one short, specific line naming a concrete outcome — the stop
-hook reads that line back as the next instruction. Detail goes underneath it.
+One paragraph on what this plan is for and why, then the steps. Each box is one
+step: implement ONE per turn, mark it \`- [x]\`, and the stop hook advances to the
+next. Keep every line short, specific and direct — one concrete outcome, because
+the hook reads that line back as the next instruction — with detail underneath it
+only where it isn't obvious.
 
 - [ ] first step
 EOF
@@ -2109,8 +2107,15 @@ _llm_skill() {
       [ -f "$f" ] || continue
       printf '  %s\n' "$(basename "$(dirname "$f")")"
     done
+    printf '  %s (generated - infra-llm --designer)\n' "$LLM_DESIGN_SKILL"
     return 0
   fi
+  # Short and pre-prefix names for the same skills
+  case "$name" in
+    step|step-plan|plan)            name="infra-llm-step" ;;
+    workflow|llm-workflow)          name="infra-llm-workflow" ;;
+    design|design-review|designer|"$LLM_DESIGN_SKILL") _llm_designer_skill_md; return 0 ;;
+  esac
   f="$LLM_SKILLS_DIR/$name/SKILL.md"
   # Briefs that aren't full skills (the review brief) live under templates/
   [ -f "$f" ] || f="${LLM_INFRA_DIR}/llm/templates/${name}.md"

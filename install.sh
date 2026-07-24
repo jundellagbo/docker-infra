@@ -9,7 +9,8 @@
 #   sudo ./install.sh --no-node                # skip Node/nvm
 #   sudo ./install.sh --node-version 20        # install this Node major (default: --lts)
 #   sudo ./install.sh --no-claude              # skip Claude Code, its MCPs and plugins
-#   sudo ./install.sh --no-mcp                 # skip registering Claude MCP servers
+#   sudo ./install.sh --no-mcp                 # skip the MCP servers
+#                                              # (figma, chrome-devtools, codebase-memory-mcp)
 #   sudo ./install.sh --no-plugins             # skip installing Claude plugins
 #
 # Component selectors: --php --composer --wp --node --claude --mcp --plugins
@@ -207,6 +208,10 @@ if [ "$UNINSTALL_MODE" -eq 1 ]; then
         print_info "Unregistering Claude MCP servers..."
         run_as_user "claude mcp remove -s user figma >/dev/null 2>&1" || true
         run_as_user "claude mcp remove -s user chrome-devtools >/dev/null 2>&1" || true
+        run_as_user "claude mcp remove -s user codebase-memory-mcp >/dev/null 2>&1" || true
+        # The binary is ours to remove too - it was installed with --skip-config,
+        # so it owns no agent config of its own and nothing else points at it.
+        rm -f "${TOOL_HOME}/.local/bin/codebase-memory-mcp"
         print_success "Claude MCP servers unregistered"
     fi
 
@@ -632,6 +637,31 @@ if [ $INSTALL_MCP -eq 1 ]; then
         claude_mcp_add chrome-devtools \
             "-s user chrome-devtools -- npx chrome-devtools-mcp@latest --autoConnect" \
             "--autoConnect"
+
+        # codebase-memory-mcp: a tree-sitter knowledge graph of the repo, so an
+        # agent can answer structural questions (who calls this, where is it
+        # defined, what would this change break) off an index instead of reading
+        # whole files. A single static binary, installed into the user's own
+        # ~/.local/bin - no root, no Node.
+        #
+        # --skip-config on purpose: the installer otherwise writes its own MCP
+        # entries, instructions, skills and lifecycle hooks into every agent it
+        # can find, which is exactly the surface infra-llm owns. Take the binary,
+        # register the server here, and leave the agent config to one owner.
+        cbm_bin="${TOOL_HOME}/.local/bin/codebase-memory-mcp"
+        if [ -x "$cbm_bin" ] && [ $FORCE_REINSTALL -eq 0 ]; then
+            print_info "codebase-memory-mcp binary already present"
+        else
+            print_info "Installing the codebase-memory-mcp binary..."
+            run_as_user 'curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh | bash -s -- --skip-config >/dev/null 2>&1' \
+                && print_success "codebase-memory-mcp installed" \
+                || print_warning "codebase-memory-mcp install failed - see https://github.com/DeusData/codebase-memory-mcp"
+        fi
+        if [ -x "$cbm_bin" ]; then
+            claude_mcp_add codebase-memory-mcp "-s user codebase-memory-mcp -- '$cbm_bin'"
+        else
+            print_warning "no codebase-memory-mcp binary at ${cbm_bin} - skipping registration"
+        fi
     else
         print_warning "Claude CLI not available - skipping MCP registration"
     fi
