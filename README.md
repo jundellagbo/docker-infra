@@ -1,6 +1,59 @@
-# Docker Development Environment
+# Development Infrastructure
 
-A complete local development stack with Nginx, Apache, PHP, MySQL, PostgreSQL, Redis, Adminer, and MailHog.
+**A planning harness for Claude Code and other agent LLMs** — plus the local
+infrastructure it runs against.
+
+Point an agent at a task and it starts typing. This makes it write the plan
+first: every discrete item as a checkbox in a file you can read and correct,
+then one step per turn, ticked off as it goes. You review the plan while it is
+still a paragraph, not after it has become a diff. Wire it once and it applies
+to every repository on the machine — nothing is checked into your projects.
+
+```
+you:    "add rate limiting to the API"
+agent:  writes infra-llm/plans/rate-limiting.md — 6 checkboxes
+you:    "drop 4, the cache already handles that"
+agent:  implements step 1, ticks it, stops. The stop hook feeds it step 2…
+```
+
+It also stops an agent from committing your work, records what each session was
+asked to do, and ships the skills that make Claude Code follow all of it.
+
+Three parts, independent of each other — use one, two, or all three:
+
+| Part | What it is | Entry point |
+| ---- | ---------- | ----------- |
+| **Docker stack** | Nginx, Apache, PHP 7.4-8.4, MySQL, PostgreSQL, Redis, Adminer, MailHog, wildcard SSL and DNS for `*.dev.local` | `docker compose up -d` |
+| **Host tooling** | Multiple host PHP versions + switcher, Composer, WP-CLI, Node via nvm, Claude Code, its MCP servers and plugins | `sudo ./install.sh` |
+| **Agent workflow** | The planning harness: plan protocol, one-step-per-turn stop hooks, verification gate, session records, git and search guards, and the Claude Code skills that drive them | `infra-llm --global` |
+
+```bash
+source /path/to/infra/commands.sh   # shell helpers: git shortcuts + infra-llm
+infra-llm --global                  # wire the planning harness, machine-wide
+docker compose up -d                # start the stack
+```
+
+Use it for: agent-driven development in any language, keeping a long task on
+track across sessions, reviewing an agent's intent before its output, and
+running a PHP/WordPress stack locally without installing any of it on the host.
+
+## Contents
+
+- [Quick Start](#quick-start) — the Docker stack
+- [Host Development Tools](#host-development-tools-installsh) — PHP, Composer, Node, Claude Code
+- [Chrome DevTools MCP](#chrome-devtools-mcp--use-your-own-browser) — agents driving your real browser
+- [Database Credentials](#database-credentials) · [Docker Commands](#docker-commands) · [Service URLs](#service-urls)
+- [Troubleshooting](#troubleshooting)
+- **Agent / LLM workflow**
+  - [Shell Entry Point (`commands.sh`)](#shell-entry-point-commandssh)
+  - [How to Use with Claude Code](#how-to-use-with-claude-code) — start here
+  - [Manual setup you have to do yourself](#5-manual-setup--the-parts-only-you-can-do) — Chrome debugging, DNS, certs
+  - [Why plan first](#why-plan-first) — what each rule prevents
+  - [Does it save tokens?](#does-it-save-tokens) — the honest accounting
+  - [Agent / LLM Workflow](#agent--llm-workflow-llmsh) — what it does and why
+  - [Three Commands, Three Scopes](#three-commands-three-scopes) — `--init` / `--agent` / `--global`
+  - [Wire the Whole Machine Once](#wire-the-whole-machine-once---global)
+  - [Git guard, pull requests and releases](#git-guard-pull-requests-and-releases)
 
 ## Features
 
@@ -15,6 +68,7 @@ A complete local development stack with Nginx, Apache, PHP, MySQL, PostgreSQL, R
 - **Adminer** - Database management UI (port 8081)
 - **MailHog** - Email testing (SMTP 1025, Web 8025)
 - **Config Watcher** - Auto-reload Nginx on config changes
+- **Agent workflow** - One plan per task, one step per turn, session records, git guard
 
 ## Quick Start
 
@@ -495,6 +549,152 @@ infra-llm 2026-07-23.4
 Sourcing `git.sh` directly still works and stays self-contained; it just misses
 the reload hook.
 
+## How to Use with Claude Code
+
+Five minutes, once per machine. After this every repository you open in Claude
+Code follows the same workflow, with nothing checked into the repo.
+
+### 1. Load the shell helpers
+
+```bash
+source /path/to/infra/commands.sh
+```
+
+Add that line to `~/.bashrc` (or `~/.zshrc`) to make it permanent — `install.sh`
+does it for you. It brings in the git shortcuts, the worktree helpers and the
+`infra-llm` command, and re-sources itself whenever this checkout changes.
+
+### 2. Wire the machine
+
+```bash
+infra-llm --global
+```
+
+Installs four things into Claude Code's own config directory
+(`$CLAUDE_CONFIG_DIR`, else `~/.claude`), where they apply to **every** project:
+
+| | |
+| --- | --- |
+| `CLAUDE.md` | the instruction block — how the agent is expected to work |
+| `settings.json` | the hooks: step gate, verify gate, session records, git and search guards |
+| `commands/infra-llm.md` | the `/infra-llm` slash command |
+| `skills/` | `step-plan` and `llm-workflow`, loaded automatically when relevant |
+
+Restart any Claude Code session that was already open — settings are read at
+session start.
+
+### 3. Prepare a repo (optional)
+
+```bash
+cd ~/code/my-project
+infra-llm --init
+```
+
+Creates `infra-llm/` for plans and session records, `.infra-llm.env` for this
+repo's settings, and the ignore entries that keep both out of git. Optional
+because the hooks create what they need on demand — `--init` mainly buys you the
+ignore rules and a place to set `VERIFY_CMD`.
+
+### 4. Work
+
+Ask for something with more than one step. What changes:
+
+- the agent writes a **plan file** first — `infra-llm/plans/<slug>.md`, one
+  `- [ ]` checkbox per discrete item;
+- it implements **one step per turn**, ticks the box, and stops;
+- the **stop hook** blocks that stop and feeds it the next step, so nothing is
+  silently dropped and each turn stays small;
+- when every box is ticked it runs `infra-llm --verify`, which runs this repo's
+  `VERIFY_CMD` and clears the plan;
+- it **cannot commit, push, merge or rebase** — the git guard denies those, and
+  you decide when work gets committed;
+- when the session ends, a record of what was asked lands in
+  `infra-llm/sessions/`.
+
+### 5. Manual setup — the parts only you can do
+
+Everything else installs itself. These five need a human, and each one fails
+*quietly* when skipped — do them now rather than wondering later why an agent is
+screenshotting a browser you can't see.
+
+**1. Chrome: enable remote debugging** — needed for any agent that opens,
+inspects or screenshots a page.
+
+```
+chrome://inspect/#remote-debugging     →  enable, then restart Chrome
+```
+
+Chrome 144+ only. No process outside the browser can flip this — that is the
+point of the gate. Skip it and the `chrome-devtools` MCP cannot attach to your
+browser, so it silently opens an empty throwaway profile instead: the agent
+screenshots a page you are not looking at, with none of your logins. It is a
+one-time setting, persisted as `devtools.remote_debugging` in Chrome's
+`Local State`, and it survives restarts. Verify:
+
+```bash
+port=$(head -1 ~/.config/google-chrome/DevToolsActivePort)   # Linux, stable channel
+curl -sf "http://127.0.0.1:$port/json/version" && echo LIVE || echo OFF
+```
+
+Check the port, not the file — Chrome leaves `DevToolsActivePort` behind when
+you switch debugging off. See
+[Chrome DevTools MCP](#chrome-devtools-mcp--use-your-own-browser) for the
+per-platform paths and why `--remote-debugging-port` is not a substitute.
+
+**2. Restart Claude Code after `infra-llm --global`** — hooks and settings are
+read at session start. A window opened beforehand keeps the old (empty) set, and
+looks exactly like "the hooks don't work".
+
+**3. The shell line in `~/.bashrc`** — `install.sh` writes it; if you skipped
+the installer, add it yourself:
+
+```bash
+[ -f "$HOME/devops/infra/commands.sh" ] && source "$HOME/devops/infra/commands.sh"
+```
+
+Without it `infra-llm` still works (the launcher is on `PATH`), but you lose the
+git shortcuts, the worktree helpers and reload-on-change.
+
+**4. Trust the CA certificate** — for `https://*.dev.local` without browser
+warnings. `./scripts/generate-ssl.sh` prints the instructions; on Windows see
+[Installing CA Certificate](#installing-ca-certificate-in-windows).
+
+**5. Host DNS for `*.dev.local`** — containers resolve it themselves, your
+browser does not:
+
+```bash
+sudo ./scripts/setup-host-dns.sh     # Linux/systemd-resolved, survives reboots
+```
+
+On other systems add hosts-file entries per site — hosts files do not support
+wildcards.
+
+### Commands worth knowing on day one
+
+```bash
+infra-llm --status      # what's wired here, active plan, next step, git mode
+infra-llm --steps       # the next unchecked step the stop hook will demand
+infra-llm --plan <slug> # start a plan yourself
+infra-llm --verify      # run the checks and close the plan out
+infra-llm --doctor      # can this machine run it? what's installed where?
+infra-llm --sessions    # what past sessions were asked to do
+```
+
+Inside Claude Code the same words work as `/infra-llm status`, `/infra-llm
+review`, `/infra-llm pr`, and so on.
+
+### If it doesn't seem to be working
+
+| Symptom | Cause |
+| ------- | ----- |
+| No plan, no auto-continue | The session started before `--global`; settings load at session start, so restart it |
+| Nothing happens on a one-line question | Correct — the protocol engages for multi-step work, or when a plan exists |
+| `unknown command` from `infra-llm` | A shell holding an old copy: `infra-reload`, or open a new terminal |
+| Auto-continue went quiet mid-plan | The stall guard hit its cap after three turns with no plan change — `infra-llm --doctor` says so, and a new session resets it |
+
+`infra-llm --doctor` checks the lot: PATH, hook scripts, the machine-wide
+install, and whether this shell is running a stale copy.
+
 ## Agent / LLM Workflow (`llm.sh`)
 
 `git.sh` sources `llm.sh`, which ships the shared agent workflow — plan
@@ -502,7 +702,132 @@ protocol, step-by-step stop hooks, session records, the git guard and the vexp
 search guard. The hooks live **only here**, in `llm/hooks/`; a project never
 gets a copy of them. A project is only ever pointed at them — either through the
 machine-wide install (`--global`) or through its own hook config (`--agent`),
-both of which call the `infra-llm` command rather than vendoring anything.
+both of which call the `infra-llm` command rather than vendoring anything. Fix a
+hook here and every repo on the machine is fixed, with nothing to re-run.
+
+### Why plan first
+
+Each rule in the protocol exists because of a specific way agent work goes
+wrong.
+
+**The agent writes the plan before it writes code.**
+*Prevents:* implementing an interpretation you never agreed to. A plan is a
+list of one-line outcomes — cheap to read, cheap to argue with. Cutting a step
+costs you a sentence; cutting a finished implementation costs a review, a
+revert, and whatever it broke on the way.
+
+**One step per turn.**
+*Prevents:* the twelve-file reply where step 3 was wrong and everything after it
+was built on step 3. Each turn is small enough to actually read, and the plan
+file says exactly where it got to.
+
+**The plan file is the state, not the conversation.**
+*Prevents:* re-deriving the task from scratch every turn — the guessing that
+happens when an agent has to reconstruct "what were we doing" from a long
+transcript. It re-reads a checklist instead. This is also why the plan survives
+a context compaction, a crash, or a session that ends at 2am.
+
+**Steps are revised, never silently dropped.**
+*Prevents:* the quiet omission. Something that turns out to be unnecessary is
+marked `- [x] … (skipped: reason)`, so you find out it was skipped and why,
+rather than noticing three weeks later that it never happened.
+
+**A verification gate at the end.**
+*Prevents:* "done" meaning "I stopped typing". The plan will not close until
+`VERIFY_CMD` passes, so the last turn is a test run rather than a summary.
+
+**Session records.**
+*Prevents:* starting tomorrow by re-explaining yesterday. `infra-llm --sessions`
+says what each session was asked to do; a new session reads the plan and picks
+up mid-task.
+
+**The git guard.**
+*Prevents:* an agent committing, pushing or rebasing on your behalf. It leaves
+the work in the tree and tells you what changed — you decide what lands, and
+when.
+
+### Does it save tokens?
+
+Not directly — and it is worth being clear about that, because the honest
+answer is more useful than the flattering one.
+
+**What it costs.** Writing the plan is tokens you would not otherwise spend.
+One step per turn means more turns, and each turn re-reads the plan file. On a
+task the agent would have got right first time, this setup is strictly more
+expensive.
+
+**What it saves.** The expensive failure in agent work is not a long reply, it
+is the *wrong* reply — an implementation built on a misread of the task, which
+costs the tokens that produced it, the tokens spent reviewing it, and the
+tokens spent undoing it. That is where the protocol pays:
+
+| Without | With |
+| ------- | ---- |
+| Agent guesses the scope, implements 6 things, 2 were wanted | You cut 4 checkboxes before any of them are built |
+| Wrong assumption surfaces in the diff, after the work | Wrong assumption surfaces in a one-line plan step, before it |
+| Each turn re-derives "what are we doing" from the transcript | Each turn re-reads a checklist |
+| Context compaction loses the task; you re-explain it | The plan file survives; the agent resumes from it |
+| A new session starts from nothing | Session records say what the last one was asked to do |
+
+Re-reading a short checklist is cheaper than re-deriving intent from a long
+conversation, and it does not degrade as the conversation grows. That is the
+mechanism, not a claim that planning is free.
+
+**When it is not worth it.** A one-line fix, a question, a single file rename —
+the protocol only engages for multi-step work, and you should not force a plan
+onto something smaller. `infra-llm --plan` exists for when you want one anyway.
+
+**What it definitely saves: your time.** A plan is reviewable in seconds. A
+diff is not.
+
+### What it actually does
+
+Five mechanisms. Each is a hook Claude Code calls at a specific moment.
+
+**The plan is the checklist.** Multi-step work goes into
+`infra-llm/plans/<slug>.md` as `- [ ]` checkboxes — no separate progress file,
+no status kept in the conversation. `infra-llm/plans/.active-plan` lists which
+plan files are live. You see the file; so does the agent; they cannot disagree.
+
+**One step per turn** (`Stop` hook). The agent implements one unchecked box,
+ticks it, and stops. The hook blocks that stop and hands back the next step, so
+the work advances in bounded turns instead of one sprawling reply, and a step
+can't be silently dropped — an unneeded one is marked `- [x] … (skipped:
+reason)`, not deleted. You see this as the agent continuing on its own, one
+step at a time, until the plan is done.
+
+**A stall guard behind it.** If three consecutive turns end with no change to
+any plan file, the hook gives up and lets the session stop, so a stuck agent
+can't loop forever. The counter is keyed to the session and the plan's contents:
+tick a box and it resets, start a new session and it resets. `infra-llm
+--doctor` reports a repo sitting at the cap.
+
+**A verification gate** (`infra-llm --verify`). When every box is ticked, the
+agent runs it; it runs this repo's `VERIFY_CMD` (from `.infra-llm.env`), checks
+the container logs where relevant, and only then clears `.active-plan` so the
+session may end. No `VERIFY_CMD` set means the gate still closes the plan, it
+just has no project checks to run.
+
+**Guards on the dangerous things** (`PreToolUse` hooks):
+
+- *git guard* — the agent cannot commit, push, merge, rebase, reset, checkout,
+  stash or rewrite history. It leaves work in the tree and tells you what
+  changed; you decide when it lands. `--pull-request` and `--create-release`
+  open a short, explicit window where committing and pushing are allowed;
+  destructive commands stay denied throughout. Tune with `GIT_GUARD` in
+  `.infra-llm.env`: `deny` (default), `ask`, or `off`.
+- *search guard* — steers `Grep`/`Glob` toward the faster index when one is
+  running, and gets out of the way when it isn't.
+
+**Session records** (`SessionEnd` hook). Every session writes what it was asked
+to do into `infra-llm/sessions/<session-id>.md`, last 10 kept. `infra-llm
+--sessions` lists them — useful for "what was that other window doing?".
+
+Instructions come from one template (`llm/templates/instructions.md`) rendered
+into the machine-wide `CLAUDE.md` or each repo's own, between
+`<!-- infra-llm:start -->` markers. Editing anything between those markers is
+lost on the next refresh — change the template here instead, and `--global` or
+`--init` updates the copies.
 
 ```bash
 infra-llm --init           # this repo's state: plan dir, sessions, ignore rules
@@ -742,6 +1067,58 @@ If a terminal reports `unknown command`, the shell is running an `infra-llm`
 function it sourced before that command existed — `infra-reload` (or a new
 shell) fixes it, `infra-llm --doctor` detects it, and `commands.sh` prevents it
 by re-sourcing on change.
+
+### Tuning and extending it
+
+Everything below is meant to be edited. Nothing else in a wired repo is.
+
+**`.infra-llm.env` — per repo, git-ignored, written commented-out by `--init`.**
+The only settings file read; a repo has exactly this or it has none:
+
+```dotenv
+VERIFY_CMD="npm test && npm run lint"   # what infra-llm --verify runs here
+GIT_GUARD=deny                          # deny (default) | ask | off
+GIT_GUARD_ALLOW="tag stash"             # subcommands to let through in this repo
+CLAUDE_SESSIONS_KEEP=10                 # session records to keep (max 10)
+```
+
+`VERIFY_CMD` is the one worth setting first: without it the verification gate
+closes the plan but runs no project checks. `GIT_GUARD=off` still denies
+destructive commands — `reset --hard`, `clean -fd`, history rewriting — because
+those are never what a repo means by "relaxed".
+
+**The hooks — `llm/hooks/`, one copy for every repo.** Edit one and every wired
+repo picks it up on its next run; nothing to redeploy, nothing to re-init.
+`infra-llm --doctor` runs each of them in a scratch directory, so a broken edit
+shows up immediately rather than at the next stop.
+
+**The instruction block — `llm/templates/instructions.md`.** This is what agents
+actually read. It is rendered between `<!-- infra-llm:start -->` markers into
+the machine-wide `CLAUDE.md` (via `--global`) and into each wired repo's own
+instruction file (via `--agent` / `--docs`). Editing a rendered copy is lost on
+the next refresh; edit the template, then:
+
+```bash
+infra-llm --global      # refresh the machine-wide copy
+infra-llm --docs        # refresh this repo's copies
+```
+
+Re-running is cheap: each piece is compared first and rewritten only when it
+differs, and `--status` marks a copy that has drifted `OUT OF DATE`.
+
+**The skills — `llm/skills/`.** `step-plan` and `llm-workflow` are the protocol
+itself, installed by `--global` and loaded by Claude Code when their descriptions
+match what you asked for. Add a directory with a `SKILL.md` and the next
+`--global` installs it too. `design-review` is generated separately and is
+opt-in: `infra-llm --designer` for one repo, `--global --designer` everywhere.
+
+**The slash command — one file, `/infra-llm <what>`.** Generated so a project
+gets a single command rather than one per feature; `--no-commands` skips it.
+
+**The briefs — `llm/templates/`.** `code-review.md`, `pull-request.md` and
+`create-release.md` are what `--code-review`, `--pull-request` and
+`--create-release` print. They are instructions to an agent, so they follow the
+same rule as everything else here: short, specific, imperative, and say why.
 
 ### Environments
 
