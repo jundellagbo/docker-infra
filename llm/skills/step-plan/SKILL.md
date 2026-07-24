@@ -1,6 +1,6 @@
 ---
 name: step-plan
-description: Step-by-step execution protocol for this repository — track any multi-step task with checkboxes directly in a plan file under plans/ (registered in plans/.active-plan), implement exactly one step per turn for token budgeting, and finish with the verification gate. Use at the START of any task with more than one step (a feature, a batch of fixes, a refactor, a migration, a client feedback list) and whenever an unfinished active plan exists (resume it before starting anything new).
+description: Step-by-step execution protocol for this repository — track any multi-step task with checkboxes directly in a plan file under infra-llm/plans/ (registered in infra-llm/plans/.active-plan), implement exactly one step per turn for token budgeting, and finish with the verification gate. Use at the START of any task with more than one step (a feature, a batch of fixes, a refactor, a migration, a client feedback list) and whenever an unfinished active plan exists (resume it before starting anything new).
 ---
 
 # Step plan protocol

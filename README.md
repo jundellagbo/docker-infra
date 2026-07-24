@@ -105,6 +105,96 @@ Optional install flags include `--no-composer`, `--no-wp`, `--no-node`,
 `--no-claude`, `--no-mcp`, and `--no-plugins`. Use `--node-version 20` to
 install a specific Node major instead of the latest LTS release.
 
+### Installing or Reinstalling One Component
+
+The same component selectors work without `--uninstall`. On their own they
+install **only** what they name, and a component that is already there is
+reinstalled rather than skipped — so this is also how you refresh one tool
+without touching PHP or the rest of the box:
+
+```bash
+# Reinstall just the Claude Code CLI
+sudo ./install.sh --claude
+
+# Re-register the MCP servers and reinstall the plugins
+sudo ./install.sh --mcp --plugins
+
+# Add PHP 8.2 and 8.3 only
+sudo ./install.sh --php 8.2 8.3
+```
+
+Selectors: `--php`, `--composer`, `--wp`, `--node`, `--claude`, `--mcp`,
+`--plugins`. Anything not named is skipped, apt included — a Claude-only run
+does no `apt-get update` at all. PHP versions still need the `--php` selector,
+so `sudo ./install.sh --claude 8.2` is rejected rather than quietly ignored.
+
+### Chrome DevTools MCP — Use Your Own Browser
+
+The `chrome-devtools` MCP server is registered with `--autoConnect` so agents
+drive the Chrome you already have open, with your logged-in profile, instead of
+launching a second empty one. A server registered by an earlier install without
+the flag is re-registered on the next run.
+
+**Enable remote debugging in Chrome once** (Chrome 144+), or none of it works:
+
+1. Open `chrome://inspect/#remote-debugging`
+2. Enable remote debugging, then restart Chrome
+3. Restart the agent session so the MCP server reconnects
+
+`--autoConnect` attaches through the `DevToolsActivePort` file Chrome writes into
+its user data dir, and Chrome only writes that file when remote debugging is on.
+With it off the server can't attach and quietly opens an empty profile instead —
+the tell is an agent seeing a blank browser rather than your tabs.
+
+The user data dir depends on the platform and the Chrome channel:
+
+| Platform | Stable channel user data dir                        |
+| -------- | --------------------------------------------------- |
+| Linux    | `~/.config/google-chrome`                           |
+| macOS    | `~/Library/Application Support/Google/Chrome`       |
+| Windows  | `%LOCALAPPDATA%\Google\Chrome\User Data`            |
+
+Other channels sit beside it — `google-chrome-beta`, `google-chrome-unstable`,
+`chromium` on Linux, `Google/Chrome Beta` on macOS. `--autoConnect` follows the
+stable channel unless the server is registered with `--channel beta|dev|canary`,
+so enable remote debugging in whichever Chrome you actually browse with.
+
+**Don't check for the file — check the port.** Chrome writes
+`DevToolsActivePort` into the user data dir when debugging starts but leaves it
+behind when you switch debugging off, so the file's presence is not evidence
+that anything is listening. Ask the port instead:
+
+```bash
+port=$(head -1 ~/.config/google-chrome/DevToolsActivePort)   # Linux, stable
+curl -sf "http://127.0.0.1:$port/json/version" && echo LIVE || echo OFF
+```
+
+`install.sh` runs the same probe after registering the MCP and reports which of
+the three states you are in: live, stale file with nothing listening, or never
+enabled.
+
+This is a one-time setting: Chrome persists it as `devtools.remote_debugging`
+in the `Local State` file of the same directory, so it survives Chrome
+restarts — but it is a real toggle, and turning it off (or a Chrome that never
+reopened its main window) puts you back in the stale-file state above.
+
+There is no way to trigger the toggle from outside the browser — that is the
+point of the gate. **`--remote-debugging-port` is not a way around it**: Chrome
+has ignored that flag on the default user data dir since version 136, so
+relaunching your own profile with it looks right and silently does nothing. A
+separate `--user-data-dir` does accept the flag, but that profile has none of
+your logins, which is the situation this whole setup exists to avoid.
+
+There must be exactly one `chrome-devtools` server, which is why the
+`chrome-devtools-mcp` Claude plugin is **not** installed and is removed if an
+earlier run added it. The plugin hardcodes `npx chrome-devtools-mcp@1.6.0` with
+no flags, so any tool call routed to its copy launches a fresh profile whatever
+the registered server says. Check with:
+
+```bash
+claude mcp list | grep chrome
+```
+
 Use `phpsw` after installation to list or change the active host PHP CLI and
 FPM version:
 
@@ -115,7 +205,7 @@ sudo phpsw 8.2
 
 ### Uninstalling Host Tools
 
-Pass one or more component selectors after `--uninstall`. PHP accepts an
+Pass the same component selectors after `--uninstall`. PHP accepts an
 optional list of versions; without versions, `--php` removes every installed
 PHP version detected by the script.
 
@@ -374,37 +464,183 @@ docker compose exec postgresql pg_isready -U root
 ### SSL certificate not trusted
 Make sure you installed the CA certificate in Windows (see "Installing CA Certificate in Windows" section above).
 
+## Shell Entry Point (`commands.sh`)
+
+`commands.sh` is the one file a shell sources. It loads `git.sh` (git
+shortcuts, worktree helpers, the branch prompt) and `llm.sh` (the `infra-llm`
+agent workflow), and `install.sh` writes it into `~/.bashrc`:
+
+```bash
+source /path/to/infra/commands.sh
+```
+
+**It reloads itself when the checkout changes.** Before each prompt it compares
+the modification times of `git.sh` and `llm.sh`; if either moved, both are
+re-sourced. Edit the checkout and the shell you are standing in is current on
+the next prompt — no more shells running functions from before your last edit,
+which is the stale copy `infra-llm --doctor` reports. Works in bash
+(`PROMPT_COMMAND`) and zsh (`precmd`), and adds itself without displacing hooks
+you already have.
+
+`infra-reload` (alias `infrareload`) does it on demand — for a shell opened
+before `commands.sh` existed, or a script where no prompt runs:
+
+```bash
+$ infra-reload
+  reloaded /path/to/infra/git.sh
+  reloaded /path/to/infra/llm.sh
+infra-llm 2026-07-23.4
+```
+
+Sourcing `git.sh` directly still works and stays self-contained; it just misses
+the reload hook.
+
 ## Agent / LLM Workflow (`llm.sh`)
 
 `git.sh` sources `llm.sh`, which ships the shared agent workflow — plan
 protocol, step-by-step stop hooks, session records, the git guard and the vexp
 search guard. The hooks live **only here**, in `llm/hooks/`; a project never
-gets a copy of them. `infra-llm --init` just wires that project's hook config to
-call the `infra-llm` command and appends an instruction block to the project's
-own `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`.
+gets a copy of them. A project is only ever pointed at them — either through the
+machine-wide install (`--global`) or through its own hook config (`--agent`),
+both of which call the `infra-llm` command rather than vendoring anything.
 
 ```bash
-infra-llm --init           # detect the repo's LLM setups, choose, wire up
+infra-llm --init           # this repo's state: plan dir, sessions, ignore rules
+infra-llm --global         # wire every repo on this machine, once
+infra-llm --agent          # wire THIS repo (hooks + instructions + command)
 infra-llm --status         # cli, wiring, docs, active plan, git guard, sessions
 infra-llm --doctor         # can this machine run it? (Linux / macOS / WSL)
-infra-llm --plan <slug>    # create plans/<slug>.md and register it
+infra-llm --plan <slug>    # create infra-llm/plans/<slug>.md and register it
 infra-llm --steps          # what the stop hook thinks the next step is
 infra-llm --verify         # run this repo's checks and close out the plan
 infra-llm --code-review    # review brief + scope of the recent changes
 infra-llm --pull-request   # PR brief + branch, commits, existing PR
 infra-llm --create-release # release brief + tags, releases, commits since
 infra-llm --worktrees      # every worktree with its own plan state
-infra-llm --sessions       # list/print .claude/sessions records
+infra-llm --sessions       # list/print infra-llm/sessions records
 infra-llm --skill <n>      # print a protocol skill (step-plan, llm-workflow)
 infra-llm --docs           # refresh the instruction blocks after editing infra
 infra-llm --uninstall      # remove the wiring and the instruction blocks
 ```
 
-`--init` looks for every LLM setup it knows — Claude Code, Codex, Cursor,
+### Three Commands, Three Scopes
+
+| Command | Scope | Installs |
+| ------- | ----- | -------- |
+| `--init` | this repo | `infra-llm/` (plans + sessions), `.infra-llm.env`, and the ignore entries for both |
+| `--global` | this machine | hooks, instruction block, `/infra-llm`, workflow skills — every repo covered |
+| `--agent` | this repo | the same wiring, but inside the repo itself |
+
+`--init` is repo *state*, nothing more: no hooks, no instruction block, no
+command. That is all a repo needs when the machine has a `--global` install —
+and it is what makes the plan files and session records work in any checkout.
+
+It also keeps that state out of everything that ships. Plan files and session
+transcripts are machine-local scratch: in an image they are dead weight, and
+they bust the build cache on every edit.
+
+| File | When |
+| ---- | ---- |
+| `.gitignore` | created when missing — the workflow depends on it |
+| `.dockerignore`, `.npmignore`, `.gcloudignore`, `.vercelignore`, `.prettierignore`, `.eslintignore` | **appended to only, never created** |
+
+`--init` does not invent ignore files. A repo without a `.dockerignore` has
+decided something by not having one, and a file it never asked for turning up
+is not a fix for a problem it does not have. `.npmignore` is the one where
+creating it would do real damage — npm falls back to `.gitignore` when the file
+is absent, so a new `.npmignore` listing just our paths would start publishing
+everything `.gitignore` was keeping out of the tarball. Write the file yourself
+and the next `--init` will keep it up to date.
+
+The `--init` summary lists which files ended up covered:
+
+```
+  ignored:  .gitignore .dockerignore .prettierignore
+```
+
+Reach for `--agent` when there is no machine-wide install, or when teammates and
+CI clone the repo and must get the workflow along with it. It runs the `--init`
+state prep first, so it stays a one-command setup.
+
+`--agent` looks for every LLM setup it knows — Claude Code, Codex, Cursor,
 Windsurf, GitHub Copilot, Gemini, Cline/Roo, Aider — pre-selects the ones the
 repo already shows signs of, and still offers the rest so a repo can adopt one
 it doesn't use yet. Non-interactive: `--claude --codex --cursor --windsurf
 --copilot --gemini --cline --aider`, `--all`, `--yes`.
+
+Re-running `--agent` after infra-llm itself changed brings the instruction block
+up to date: it compares what sits between the `infra-llm` markers with the
+current template and rewrites the block when they differ (`updated
+instructions in <file>`), leaves it alone when they match (`current`), and never
+touches the rest of the file. `--force` rewrites even a block that is already
+current; `--docs` does the same for the blocks alone, without re-running the
+rest of the wiring.
+
+### Wire the Whole Machine Once (`--global`)
+
+Running `--agent` in every repo, then again after every infra change, gets old.
+`infra-llm --global` installs the entire workflow into Claude Code's own config
+directory instead, where it applies to every project:
+
+| Piece | Lands in | Effect |
+| ----- | -------- | ------ |
+| Instruction block | `CLAUDE.md` | the protocol, in every session |
+| Hooks | `settings.json` | step gate, verify gate, session records, guards |
+| `/infra-llm` command | `commands/infra-llm.md` | the slash command everywhere |
+| `step-plan` skill | `skills/step-plan/SKILL.md` | loads at the start of multi-step work |
+| `llm-workflow` skill | `skills/llm-workflow/SKILL.md` | loads when asked to wire a repo |
+
+```bash
+infra-llm --global                  # install or refresh all of it
+infra-llm --global --designer       # ... plus the optional design-review skill
+infra-llm --global --no-git-guard   # ... but leave git alone
+infra-llm --global --no-hooks       # ... instructions, command and skills only
+infra-llm --global --no-skill       # ... no skills at all
+infra-llm --global --remove         # take all of it back out
+```
+
+`design-review` is deliberately **not** in that list. It pulls in impeccable,
+the emilkowalski design skills and the chrome-devtools MCP — worth having where
+you do front-end work, noise everywhere else. Install it per repo with
+`infra-llm --designer`, or machine-wide with `--global --designer` if you want
+it everywhere.
+
+No repo needs `--agent` after that — just `--init` for its own state. Updating
+this checkout updates every repo on the machine; the next session picks it up.
+
+**Re-run it after every infra change; it's idempotent.** Each piece is compared
+before it's touched — the block against the template, the hooks against what's
+in `settings.json`, the command and skills byte-for-byte — and rewritten only
+when it differs. A no-op run just prints `current` a few times, and anything you
+added yourself (your own `CLAUDE.md` prose, your own hooks or skills) is left
+alone. `--status` and `--doctor` name what's installed and mark anything stale.
+
+> **Don't wire both layers.** Claude Code *merges* user-level and project-level
+> hooks rather than letting one override the other, so a repo that also ran
+> `--agent` fires every hook twice — two stop decisions, the protocol injected
+> twice, guards reporting twice. Nothing breaks, but it's noise. `--status` and
+> `--doctor` warn when they see it; `infra-llm --uninstall` in the repo drops
+> back to one layer.
+
+The config directory is `$CLAUDE_CONFIG_DIR` when set and `~/.claude` otherwise
+— the same rule Claude Code follows — so this works unchanged on **Linux,
+macOS, WSL and Git Bash on Windows**. (Native Windows without a bash can't run
+these scripts at all; use WSL or Git Bash there.)
+
+Three things to know before running it:
+
+- **The hooks apply to every project you open**, not just wired ones — the git
+  guard included, which means no agent can commit or push in *any* repo on the
+  machine. That is usually the point, but `--no-git-guard` opts out.
+- **Claude Code only.** No other agent reads a user-level instruction file, so
+  Codex, Cursor, Copilot and friends still need `--agent` in the repo.
+- **This machine only.** Teammates and CI cloning the repo see nothing, which is
+  why `--agent` writes a repo block. Use `--global` for your own machines and
+  `--agent` for anything shared — `--agent --no-docs` gives a repo the hooks
+  while the instructions keep coming from the global block.
+
+Per-repo state stays per repo: `infra-llm/` (plans and sessions) and
+`.infra-llm.env` are repo state, not wiring, and are created on demand.
 
 Claude and Codex are the only two with a hook API; every other agent gets the
 instruction block only, written where that tool actually reads it
@@ -423,13 +659,13 @@ What it touches in the target repo:
 | `.claude/commands/infra-llm.md` | one generated slash command, `/infra-llm <what>` (skip with `--no-commands`) |
 | `.codex/hooks.json`     | `infra-llm --hook prompt` + `--hook codex-stop`                |
 | each selected agent's instruction file | protocol instructions between `<!-- infra-llm:start -->` markers |
-| `plans/`                | plan files + `.active-plan` marker (git-ignored)               |
-| `.claude/sessions/`     | one `<session-id>.md` per session (last 10), git-ignored       |
+| `infra-llm/plans/`      | plan files + `.active-plan` marker (git-ignored)               |
+| `infra-llm/sessions/`   | one `<session-id>.md` per session (last 10), git-ignored       |
 | `.infra-llm.env`        | the repo's settings — `VERIFY_CMD`, git-guard mode — written commented-out, git-ignored |
 
 Skip a guard at wiring time with `--no-git-guard` or `--no-vexp`.
 
-Hooks run in a non-interactive shell, so `--init` also installs a launcher at
+Hooks run in a non-interactive shell, so `--global` / `--agent` also install a launcher at
 `~/.local/bin/infra-llm` (override with `LLM_BIN_DIR`). Every wired command is
 guarded with `command -v infra-llm` and fails open, so a checkout on a machine
 without this repo is never blocked.
@@ -455,10 +691,10 @@ and `ask` mode and can't be allow-listed — only `off` silences them.
 
 **PRs and releases commit and push on their own.** Asking for one *is* asking for
 the commit and the push that make it, so `--pull-request` and `--create-release`
-open a 30-minute window (`plans/.git-window`, git-ignored) in which `commit`,
-`push`, `tag`, `branch` and `merge` are allowed, and the briefs tell the agent to
-do the work and report the URL rather than hand back commands. Nothing to edit
-before, nothing to revert after — the window expires by itself and is deleted on
+open a 30-minute window (`infra-llm/plans/.git-window`, git-ignored) in which
+`commit`, `push`, `tag`, `branch` and `merge` are allowed, and the briefs tell
+the agent to do the work and report the URL rather than hand back commands.
+Nothing to edit before, nothing to revert after — the window expires by itself and is deleted on
 the next guarded command. Destructive git stays denied inside it. Set
 `GIT_WINDOW_SECONDS=0` to turn it off (the commands then prepare only), or a
 different number of seconds to widen it.
@@ -476,15 +712,15 @@ from the previous tag so the bump is a decision, not an invention.
 
 ### Adopting it in a repo that already has its own workflow
 
-`plans/adopt-infra-llm.md` is a ready-to-run plan (a local, untracked file —
-`plans/` is git-ignored). Copy it into the target repo's `plans/` and have that
-repo's own agent work through it: inventory its hooks, commands, rules and
-instruction files, decide what infra-llm already covers, and remove only that —
-keeping whatever is genuinely project-specific.
+`adopt-infra-llm.md` is a ready-to-run plan (a local, untracked file —
+`infra-llm/` is git-ignored). Copy it into the target repo's plan dir and
+have that repo's own agent work through it: inventory its hooks, commands,
+rules and instruction files, decide what infra-llm already covers, and remove
+only that — keeping whatever is genuinely project-specific.
 
 ### Slash commands
 
-Claude Code only offers a project command if a file for it exists, so `--init`
+Claude Code only offers a project command if a file for it exists, so `--agent`
 writes exactly **one**: `/infra-llm <what>`. A project repo gets a single file,
 not a command per feature, and everything stays reachable:
 
@@ -496,15 +732,16 @@ not a command per feature, and everything stays reachable:
 ```
 
 The file only points at the CLI — the briefs stay in the infra checkout, so
-there is nothing to keep in sync. `infra-llm --init --no-commands` generates
+there is nothing to keep in sync. `infra-llm --agent --no-commands` generates
 nothing at all for repos that would rather use the CLI directly; a command file
 the repo wrote itself is never overwritten; `--uninstall` removes only the
 generated one. The same words work bare in a terminal: `infra-llm pr`,
 `infra-llm review`, `infra-llm doctor`.
 
 If a terminal reports `unknown command`, the shell is running an `infra-llm`
-function it sourced before that command existed — `source <infra>/git.sh` (or a
-new shell) fixes it, and `infra-llm --doctor` detects it.
+function it sourced before that command existed — `infra-reload` (or a new
+shell) fixes it, `infra-llm --doctor` detects it, and `commands.sh` prevents it
+by re-sourcing on change.
 
 ### Environments
 
@@ -529,11 +766,11 @@ session records without it, and the guards fall back to plain text matching);
 ### Worktrees
 
 Wiring is tracked, so every worktree of a wired repo is wired. State is not:
-each worktree keeps its own `plans/`, `.active-plan` and `.claude/sessions/`, so
-one agent per worktree can run in parallel without colliding. `gwtadd` prepares
-a new worktree automatically (creates the state dirs, carries `.infra-llm.env`
-over from the main checkout); `infra-llm --worktrees` shows what each worktree
-is working on:
+each worktree keeps its own `infra-llm/` — plans (with `.active-plan`) and
+sessions — so one agent per worktree can run in parallel without colliding.
+`gwtadd` prepares a new worktree automatically (creates the state dir, carries
+`.infra-llm.env` over from the main checkout); `infra-llm --worktrees` shows
+what each worktree is working on:
 
 ```
 WORKTREE                 BRANCH                 PLAN                               SESSIONS
@@ -541,7 +778,36 @@ WORKTREE                 BRANCH                 PLAN                            
  feature-login           feature/login          verify pending                     1
 ```
 
-Short aliases when the shell has sourced `git.sh`: `llminit`, `llmdocs`,
+**A branch `gwtadd` creates is pushed to `origin` with `-u`.** Without it the
+branch has no upstream, teammates and CI can't see it, and `gwtrm` has no remote
+branch to delete. Only a branch it actually created is pushed — re-checking out
+one that already exists locally or on `origin` pushes nothing — and `--no-push`
+keeps it local:
+
+```bash
+gwtadd feature/login                 # branch off origin's default, push it
+gwtadd feature/login master ../login # explicit base and path
+gwtadd spike/idea --no-push          # local only
+```
+
+If the push fails — no network, no write access, a server-side hook — the
+worktree is still there and ready; `gwtadd` says the branch is local only and
+prints the retry command rather than pretending the whole thing failed.
+
+`gwtrm <branch>` tears one down again: docker containers/volumes/images/networks
+for that compose project, the worktree directory, the local branch, and the
+branch on `origin`. Existence on the remote is checked with `git ls-remote`, not
+the local tracking ref, so a branch that was pushed but never fetched back still
+gets deleted, and a stale `origin/<branch>` ref is dropped afterwards. Files a
+container wrote as root are removed with `sudo` when a plain `rm -rf` can't
+touch them — if even that fails, `gwtrm` says which path is left and exits
+non-zero instead of reporting a cleanup that didn't happen. `--keep-branch`,
+`--keep-remote` and `--no-docker` opt out of each part; `-f` discards a dirty
+worktree and `-y` skips the confirmation.
+
+Short aliases when the shell has sourced `commands.sh` (or `git.sh`):
+`llminit`, `llmagent`,
+`llmglobal`, `llmdocs`,
 `llmstatus`, `llmplan`, `llmsteps`, `llmverify`, `llmreview`, `llmpr`,
 `llmrelease`, `llmsessions`, `llmskill`, `llmwt`, and
 `claude_session` (runs `claude` after making sure session recording is wired up

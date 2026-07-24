@@ -33,6 +33,5 @@ ssl
 docker/*/.user.ini
 
 .vexp
-plans/
 .infra-llm.env
-.claude/sessions/
+infra-llm/

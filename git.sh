@@ -2,6 +2,10 @@
 #
 # Companion: llm.sh (agent workflow - infra-llm --init, llmplan, llmsteps, ...)
 # is sourced at the bottom of this file.
+#
+# Sourcing this file directly works and is self-contained. commands.sh is the
+# usual entry point (what install.sh wires into ~/.bashrc): it loads this file
+# plus llm.sh, and re-sources both when the checkout changes.
 
 # Commit
 alias gcom='git commit -m'
@@ -21,9 +25,11 @@ alias gdel='git branch -d'
 
 # Worktrees
 #
-#   gwtadd <branch> [base] [path]
+#   gwtadd <branch> [base] [path] [--no-push]
 #                            add a worktree (base defaults to origin's default
-#                            branch, path defaults to ../<branch>)
+#                            branch, path defaults to ../<branch>). A branch it
+#                            creates is pushed to origin with -u; --no-push
+#                            keeps it local.
 #   gwtls                    list worktrees
 #   gwtcd <branch>           jump into a worktree
 #   gwtrm <branch> [opts]    tear a worktree down (docker + dir + local/remote branch)
@@ -69,9 +75,29 @@ _gwt_path_of() {
 }
 
 _gwtadd() {
-  local branch="$1" base="$2" path="$3" root base_dir start
+  local branch="" base="" path="" root base_dir start want_push=1
+  local usage="usage: gwtadd <branch> [base-branch] [path] [--no-push]   e.g. gwtadd feature/login master-upgrade ../login"
+
+  # Positional order is unchanged - the flags just get picked out of the line,
+  # so every existing "gwtadd feature/x master ../x" still means what it did.
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --no-push)  want_push=0 ;;
+      --push)     want_push=1 ;;   # the default; accepted so it can be explicit
+      -h|--help)  echo "$usage"; return 0 ;;
+      -*)         echo "unknown option: $1" >&2; return 1 ;;
+      *)
+        if   [ -z "$branch" ]; then branch="$1"
+        elif [ -z "$base" ];   then base="$1"
+        elif [ -z "$path" ];   then path="$1"
+        else echo "too many arguments: $1" >&2; return 1
+        fi ;;
+    esac
+    shift
+  done
+
   if [ -z "$branch" ]; then
-    echo "usage: gwtadd <branch> [base-branch] [path]   e.g. gwtadd feature/login master-upgrade ../login" >&2
+    echo "$usage" >&2
     return 1
   fi
 
@@ -97,6 +123,7 @@ _gwtadd() {
   [ -n "$base" ] || base="$(_gwt_default_branch)"
   mkdir -p "$base_dir" || return 1
 
+  local created=0
   if git show-ref --verify --quiet "refs/heads/$branch"; then
     # Branch already exists locally - just check it out somewhere new
     git worktree add "$path" "$branch" || return 1
@@ -112,6 +139,24 @@ _gwtadd() {
     fi
     echo "branching $branch off $start"
     git worktree add -b "$branch" "$path" "$start" || return 1
+    created=1
+  fi
+
+  # Publish a branch this command just invented: without it there is no upstream
+  # for the first push, nothing for teammates or CI to see, and nothing for
+  # gwtrm to delete on the remote. Only the branch we created - re-checking out
+  # something that already exists locally or on origin pushes nothing.
+  if [ $want_push -eq 1 ] && [ $created -eq 1 ] && git remote get-url origin >/dev/null 2>&1; then
+    if ! git -C "$path" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
+      echo "pushing $branch to origin"
+      # A push can fail for reasons that say nothing about the worktree - no
+      # network, no write access, a hook on the server. The checkout is still
+      # exactly what was asked for, so keep it and name the retry.
+      if ! git -C "$path" push -u origin "$branch"; then
+        echo "push failed - worktree is ready, branch is local only" >&2
+        echo "  retry with: git -C '$path' push -u origin '$branch'" >&2
+      fi
+    fi
   fi
 
   # Untracked env files never come along with the checkout - carry them over
@@ -125,7 +170,9 @@ _gwtadd() {
   if declare -F _llm_wt_prep >/dev/null 2>&1; then
     _llm_wt_prep "$path" >/dev/null
   else
-    mkdir -p "${path}/plans" "${path}/.claude/sessions"
+    # Fallback for a shell that sourced git.sh without llm.sh - the names have
+    # to match LLM_PLANS_DIR / LLM_SESSIONS_DIR over there
+    mkdir -p "${path}/infra-llm/plans" "${path}/infra-llm/sessions"
   fi
 
   echo "worktree ready: $path"
@@ -166,6 +213,36 @@ _gwt_docker_cleanup() {
   return 0
 }
 
+# Remove a directory for real. Containers write into a bind-mounted worktree as
+# root, so a plain `rm -rf` there dies with "Permission denied" and leaves the
+# tree half-gone; escalate rather than reporting a cleanup that didn't happen.
+_gwt_rm_tree() {
+  local path="$1"
+  [ -n "$path" ] && [ -e "$path" ] || return 0
+
+  rm -rf "$path" 2>/dev/null
+  [ -e "$path" ] || return 0
+
+  # Our own files, just written read-only (node_modules, vendor, .git objects)
+  chmod -R u+rwX "$path" 2>/dev/null
+  rm -rf "$path" 2>/dev/null
+  [ -e "$path" ] || return 0
+
+  if command -v sudo >/dev/null 2>&1; then
+    # Passwordless first so scripts and hooks never block on a prompt
+    sudo -n rm -rf "$path" 2>/dev/null
+    [ -e "$path" ] || return 0
+    if [ -t 0 ]; then
+      echo "root-owned files left in $path - sudo needed to remove them"
+      sudo rm -rf "$path"
+      [ -e "$path" ] || return 0
+    fi
+  fi
+
+  echo "could not remove $path (permission denied) - remove it manually: sudo rm -rf '$path'" >&2
+  return 1
+}
+
 _gwtrm() {
   local branch="" want_path="" force=0 assume_yes=0 skip_docker=0 keep_branch=0 keep_remote=0
   local usage="usage: gwtrm <branch> [path] [-f] [-y] [--no-docker] [--keep-branch] [--keep-remote]"
@@ -190,7 +267,7 @@ _gwtrm() {
     return 1
   fi
 
-  local root path has_remote=0
+  local root path has_remote=0 remote_stale=0 remote_offline=0
   root="$(_gwt_root)" || return 1
   if [ -n "$want_path" ]; then
     if [ ! -d "$want_path" ]; then
@@ -206,13 +283,33 @@ _gwtrm() {
     path="$PWD"
     [ "$path" != "$root" ] && [ -e "${path}/.git" ] || path=""
   fi
-  git show-ref --verify --quiet "refs/remotes/origin/$branch" && has_remote=1
+  # Ask origin itself. refs/remotes/origin/<branch> only says what the last
+  # fetch saw: missing there (never fetched) is why a delete used to be skipped
+  # silently, and present-but-stale is a tracking ref to clean up, not a push.
+  git show-ref --verify --quiet "refs/remotes/origin/$branch" && remote_stale=1
+  if git remote get-url origin >/dev/null 2>&1; then
+    # GIT_TERMINAL_PROMPT=0: on a private remote with no cached credentials this
+    # probe would sit on a username prompt. Failing fast is right - it falls
+    # through to the tracking ref like any other unreachable origin.
+    GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1
+    case $? in
+      0) has_remote=1; remote_stale=0 ;;
+      2) has_remote=0 ;;                                  # origin answered: not there
+      *) has_remote=$remote_stale; remote_stale=0; remote_offline=1 ;;
+    esac
+  fi
 
   echo "about to remove:"
   [ -n "$path" ] && echo "  worktree      $path"
   [ $skip_docker -eq 0 ] && [ -n "$path" ] && echo "  docker        containers/volumes/images/networks for $(_gwt_compose_project "$path")"
   [ $keep_branch -eq 0 ] && echo "  local branch  $branch"
-  [ $keep_remote -eq 0 ] && [ $has_remote -eq 1 ] && echo "  remote branch origin/$branch  (irreversible)"
+  if [ $keep_remote -eq 0 ] && [ $has_remote -eq 1 ]; then
+    if [ $remote_offline -eq 1 ]; then
+      echo "  remote branch origin/$branch  (irreversible; origin unreachable - delete may fail)"
+    else
+      echo "  remote branch origin/$branch  (irreversible)"
+    fi
+  fi
 
   if [ $assume_yes -eq 0 ]; then
     local reply
@@ -227,25 +324,43 @@ _gwtrm() {
 
   if [ -n "$path" ]; then
     if [ $force -eq 1 ]; then
-      git worktree remove --force "$path" 2>/dev/null || rm -rf "$path"
+      git worktree remove --force "$path" 2>/dev/null
     else
-      git worktree remove "$path" || {
+      # git refuses on a dirty tree, but it also refuses when it can't unlink a
+      # root-owned file - only the first case is the user's to resolve.
+      if ! git worktree remove "$path" 2>/dev/null && [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]; then
         echo "worktree is dirty - re-run with -f to discard it" >&2
         return 1
-      }
+      fi
     fi
+    # git's own remove is best-effort here: whatever it left behind (docker
+    # bind-mount leftovers, root-owned build output) still has to go.
+    _gwt_rm_tree "$path" || return 1
   fi
+  # Drops the now-dangling .git/worktrees/<name> admin directory as well
   git worktree prune
 
   if [ $keep_branch -eq 0 ] && git show-ref --verify --quiet "refs/heads/$branch"; then
     git branch -D "$branch"
   fi
 
+  local rc=0
   if [ $keep_remote -eq 0 ] && [ $has_remote -eq 1 ]; then
-    git push origin --delete "$branch"
+    if git push origin --delete "$branch"; then
+      # The push leaves the tracking ref behind when it was created locally
+      git update-ref -d "refs/remotes/origin/$branch" 2>/dev/null
+    else
+      echo "failed to delete origin/$branch - retry with: git push origin --delete '$branch'" >&2
+      rc=1
+    fi
+  elif [ $keep_remote -eq 0 ] && [ $remote_stale -eq 1 ]; then
+    # Already gone on origin; drop the tracking ref so it stops showing up
+    git update-ref -d "refs/remotes/origin/$branch" 2>/dev/null
+    echo "origin/$branch was already gone - dropped the stale tracking ref"
   fi
 
-  echo "cleaned up: $branch"
+  [ $rc -eq 0 ] && echo "cleaned up: $branch"
+  return $rc
 }
 
 alias gwtadd='_gwtadd'

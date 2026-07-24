@@ -5,7 +5,7 @@
 # repo declares and nothing else. No build tool, framework, container runtime
 # or VCS operation is assumed or invoked.
 #
-# When the checks pass and every active plan file (plans/.active-plan) is fully
+# When the checks pass and every active plan file (<plans>/.active-plan) is fully
 # checked, the active-plan marker is cleared so agent stop hooks allow the
 # session to end. Fix any failures and re-run until it prints VERIFY OK.
 #
@@ -38,7 +38,9 @@ fi
 
 # ----------------------------------------------------------------- plan marker
 
-ACTIVE="plans/.active-plan"
+. "$(dirname "$0")/state-dirs.sh"
+PLANS="$(llm_plans_dir)"
+ACTIVE="$PLANS/.active-plan"
 remaining=0
 if [ -f "$ACTIVE" ]; then
   while IFS= read -r plan; do
@@ -48,8 +50,8 @@ if [ -f "$ACTIVE" ]; then
   done < "$ACTIVE"
 
   if [ "$remaining" -eq 0 ]; then
-    rm -f "$ACTIVE" plans/.progress-guard-*
-    echo "All active plan steps are checked — cleared plans/.active-plan."
+    rm -f "$ACTIVE" "$PLANS"/.progress-guard-*
+    echo "All active plan steps are checked — cleared $ACTIVE."
   else
     echo "NOTE: unchecked steps remain in the active plan file(s); the active-plan marker stays." >&2
   fi

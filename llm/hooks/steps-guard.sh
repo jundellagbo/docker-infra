@@ -1,12 +1,14 @@
 #!/bin/bash
 # Stall guard for stop-hook auto-continue. Prints how many consecutive times
 # the given agent has been auto-continued while the active plan set
-# (plans/.active-plan and every plan file it lists) stayed unchanged.
+# (<plans>/.active-plan and every plan file it lists) stayed unchanged.
 # Adapters stop auto-continuing past 3 so a stuck agent can't loop forever.
-# The counter file lives in plans/ (git-ignored).
+# The counter file lives beside the plans (git-ignored).
 AGENT="${1:-agent}"
-ACTIVE="plans/.active-plan"
-GUARD="plans/.progress-guard-$AGENT"
+. "$(dirname "$0")/state-dirs.sh"
+PLANS="$(llm_plans_dir)"
+ACTIVE="$PLANS/.active-plan"
+GUARD="$PLANS/.progress-guard-$AGENT"
 
 # Any stable digest does - it only compares this run against the previous one.
 # md5sum is GNU-only, so macOS falls through to md5/shasum; cksum is the POSIX

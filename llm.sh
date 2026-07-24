@@ -8,7 +8,9 @@
 # and an instruction block appended to its own CLAUDE.md / AGENTS.md / GEMINI.md
 # telling the agent which commands to use.
 #
-#   infra-llm --init            # detect the repo's LLM setups, pick, wire up
+#   infra-llm --init            # this repo's own state: plans/, sessions, ignores
+#   infra-llm --global          # wire every repo on this machine, once
+#   infra-llm --agent           # wire THIS repo (hooks + instructions + command)
 #   infra-llm --docs            # re-append/refresh only the instruction blocks
 #   infra-llm --status          # wiring + active plan + session records
 #   infra-llm --doctor          # does this machine (Linux/macOS/WSL) support it?
@@ -25,19 +27,70 @@
 #   infra-llm --hook <name>     # run a hook (used by the wiring, not by hand)
 #   infra-llm --uninstall       # remove wiring + instruction blocks again
 #
-# --init inspects the repo for every LLM setup it knows (Claude Code, Codex,
+# Three commands, three scopes:
+#
+#   --init    this repo's own state - infra-llm/ (plans + sessions) and
+#             .infra-llm.env (VERIFY_CMD is per repo), plus the entries that
+#             keep both out of git and out of any other ignore file the repo
+#             already has (.dockerignore, .npmignore, ... - appended to, never
+#             created). Nothing else: no hooks, no instruction block, no
+#             command.
+#   --global  the workflow itself, once per machine, in Claude Code's config dir
+#             (see below) - every repo is covered without being touched.
+#   --agent   the workflow wired into THIS repo instead. Only needed when there
+#             is no machine-wide install, or when teammates and CI clone the repo
+#             and must get the workflow with it.
+#
+# --agent inspects the repo for every LLM setup it knows (Claude Code, Codex,
 # Cursor, Windsurf, Copilot, Gemini, Cline/Roo, Aider) and offers a selection -
 # what it finds is pre-selected, and the rest can still be picked to adopt an
 # agent the repo does not use yet. Non-interactively pass the agents instead:
 #
-#   infra-llm --init --claude --cursor     # explicit (one flag per agent)
-#   infra-llm --init --all --yes           # everything, no prompt
-#   infra-llm --init --force               # rewrite an existing instruction block
-#   infra-llm --init --no-git-guard        # skip the git guard (--no-vexp likewise)
-#   infra-llm --init --no-commands         # generate no slash command at all
+#   infra-llm --agent --claude --cursor    # explicit (one flag per agent)
+#   infra-llm --agent --all --yes          # everything, no prompt
+#   infra-llm --agent                      # an out-of-date block is refreshed
+#   infra-llm --agent --force              # rewrite it even when already current
+#   infra-llm --agent --no-git-guard       # skip the git guard (--no-vexp likewise)
+#   infra-llm --agent --no-commands        # generate no slash command at all
+#   infra-llm --agent --no-docs            # hooks and plan state only, no block
 #
-# Source it from a shell (git.sh does) for the short aliases:
-#   llminit  llmdocs  llmstatus  llmplan  llmsteps  llmverify  llmsessions
+# --global installs the whole workflow once, into Claude Code's own config dir
+# ($CLAUDE_CONFIG_DIR, else ~/.claude): the instruction block, the hooks, the
+# /infra-llm command and the two workflow skills (step-plan, llm-workflow).
+# Claude Code reads all of them in every project, so no repo needs --init at all
+# and updating this checkout is what updates every repo. Re-running is cheap and
+# idempotent - each piece is compared first and rewritten only when it differs.
+# Same paths on Linux, macOS, WSL and Git Bash.
+#
+# design-review is NOT part of it: it pulls in impeccable, the emilkowalski
+# skills and the chrome-devtools MCP, which is a per-repo choice rather than
+# something every project wants. "infra-llm --designer" installs it in one repo,
+# "--global --designer" everywhere.
+#
+#   infra-llm --global                     # install or refresh all of it
+#   infra-llm --global --designer          # ... plus the design-review skill
+#   infra-llm --global --no-git-guard      # ... without the git guard
+#   infra-llm --global --no-hooks          # instructions + command + skills only
+#   infra-llm --global --no-commands       # ... no /infra-llm command
+#   infra-llm --global --no-skill          # ... no skills at all
+#   infra-llm --global --remove            # take all of it back out
+#
+# Don't wire both layers. Claude Code MERGES user-level and project-level hooks
+# rather than letting one win, so a repo that also ran --init fires every hook
+# twice - two stop decisions, the protocol injected twice. --status and --doctor
+# warn when they see it; 'infra-llm --uninstall' in the repo is the way back.
+#
+# What this does NOT cover: user-level hooks fire in EVERY project on the
+# machine, git guard included, so opt out if that is not what you want. It is
+# Claude-only (no other agent reads a user-level file), it is this machine only
+# (teammates and CI see nothing), and per-repo state - infra-llm/ and
+# .infra-llm.env - is still per repo, created on demand. --init stays the answer
+# for a repo that must carry its own wiring; pair it with --no-docs to keep the
+# hooks while the instructions come from the global block.
+#
+# Source it from a shell for the short aliases - commands.sh loads it, and
+# git.sh pulls it in too:
+#   llminit  llmagent  llmglobal  llmdocs  llmstatus  llmplan  llmsteps  llmverify
 #   llmreview  llmpr  llmrelease  llmskill  llmwt  llmdesigner  llmdoctor
 #   claude_session   (claude, with session recording wired up first)
 
@@ -61,13 +114,41 @@ LLM_HOOK_AGENTS="claude codex"
 # The one per-repo settings file (VERIFY_CMD, GIT_GUARD, …). Nothing else is
 # read - a repo has exactly this file or it has no settings.
 LLM_ENV_FILE=".infra-llm.env"
+# All of a repo's agent state under one directory, named so it can't be mistaken
+# for something the project owns: "plans/" is a name a repo may well want for
+# itself, and ".claude/sessions/" sat inside a directory Claude Code owns. One
+# entry in .gitignore covers the lot.
+LLM_STATE_DIR="infra-llm"
+LLM_PLANS_DIR="$LLM_STATE_DIR/plans"
+LLM_SESSIONS_DIR="$LLM_STATE_DIR/sessions"
+# Earlier layouts, newest first. A repo on either keeps working until --init
+# migrates it, so an upgrade never strands an active plan mid-session.
+LLM_PLANS_DIRS_OLD="infra-llm-plans plans"
+LLM_SESSIONS_DIRS_OLD="infra-llm-sessions .claude/sessions"
 # Bumped whenever a command is added or removed. A shell that sourced an older
 # git.sh keeps that older infra-llm function, which shadows the launcher on
 # PATH and answers "unknown command" for anything added since - comparing this
 # against the value in the file on disk is how --doctor catches that.
-LLM_VERSION="2026-07-23.4"
+LLM_VERSION="2026-07-24.1"
 LLM_DOC_START="<!-- infra-llm:start -->"
 LLM_DOC_END="<!-- infra-llm:end -->"
+
+# Which layout a repo actually uses: the current one whenever it exists, then
+# each older one in turn. Answering an old name only while it is the only one
+# there keeps a half-migrated repo from having the agent write to one directory
+# while the hooks read another.
+_llm_dir_of() {
+  local root="$1" new="$2" old
+  shift 2
+  if [ -d "$root/$new" ]; then printf '%s\n' "$new"; return 0; fi
+  for old in "$@"; do
+    [ -d "$root/$old" ] && { printf '%s\n' "$old"; return 0; }
+  done
+  printf '%s\n' "$new"
+}
+# shellcheck disable=SC2086  # the _OLD lists are deliberately word-split
+_llm_plans_dir()    { _llm_dir_of "${1:-$(_llm_target)}" "$LLM_PLANS_DIR" $LLM_PLANS_DIRS_OLD; }
+_llm_sessions_dir() { _llm_dir_of "${1:-$(_llm_target)}" "$LLM_SESSIONS_DIR" $LLM_SESSIONS_DIRS_OLD; }
 
 _llm_c()  { printf '\033[0;34m→ %s\033[0m\n' "$1"; }
 _llm_ok() { printf '\033[0;32m✓ %s\033[0m\n' "$1"; }
@@ -280,15 +361,44 @@ _llm_choose_agents() {
 
 # Append (or refresh) the protocol block inside the repo's own instruction file.
 # Everything between the markers is ours; the rest of the file is never touched.
+# Read stdin, drop blank lines at the top and bottom. Both sides of the
+# comparison below go through it so the blank line the block is written with
+# doesn't read as a difference. awk only - macOS has no tac.
+_llm_trim_blanks() {
+  awk '
+    { line[NR] = $0 }
+    END {
+      s = 1;  while (s <= NR && line[s] ~ /^[[:space:]]*$/) s++
+      e = NR; while (e >= s  && line[e] ~ /^[[:space:]]*$/) e--
+      for (i = s; i <= e; i++) print line[i]
+    }'
+}
+
+# The block as it currently sits in the file, marker lines excluded
+_llm_doc_installed() {
+  awk -v s="$LLM_DOC_START" -v e="$LLM_DOC_END" '
+    index($0, e) { inblk = 0 }
+    inblk        { print }
+    index($0, s) { inblk = 1 }
+  ' "$1" | _llm_trim_blanks
+}
+
 _llm_doc_block() {
-  local root="$1" file="$2" force="$3" agent="$4" tmp
+  local root="$1" file="$2" force="$3" agent="$4" tmp what="wrote"
   local path="$root/$file"
   [ -f "$LLM_TEMPLATE" ] || { _llm_no "missing template: $LLM_TEMPLATE"; return 1; }
 
   if [ -f "$path" ] && grep -qF "$LLM_DOC_START" "$path"; then
-    if [ "$force" -eq 0 ]; then
-      printf '  current  %s (block present; --force to refresh)\n' "$file"
-      return 0
+    # An out-of-date block is the whole reason to re-run --init, so refresh it
+    # without being asked. --force still rewrites a block that already matches.
+    if [ "$(_llm_doc_installed "$path")" = "$(_llm_trim_blanks < "$LLM_TEMPLATE")" ]; then
+      if [ "$force" -eq 0 ]; then
+        printf '  current  %s (block up to date)\n' "$file"
+        return 0
+      fi
+      what="rewrote"
+    else
+      what="updated"
     fi
     tmp="$(_llm_tmp)"
     awk -v s="$LLM_DOC_START" -v e="$LLM_DOC_END" '
@@ -317,7 +427,11 @@ _llm_doc_block() {
     cat "$LLM_TEMPLATE"
     printf '\n%s\n' "$LLM_DOC_END"
   } >> "$path"
-  _llm_ok "instructions in $file"
+  case "$what" in
+    updated) _llm_ok "updated instructions in $file (block was out of date)" ;;
+    rewrote) _llm_ok "rewrote instructions in $file (was already up to date)" ;;
+    *)       _llm_ok "instructions in $file" ;;
+  esac
 }
 
 _llm_doc_strip() {
@@ -481,38 +595,107 @@ ENV
 
 # Workflow state is per-machine scratch, never committed. Creates .gitignore
 # when the repo has none - otherwise these entries would silently never land.
-_llm_gitignore() {
-  local root="$1" file="$root/.gitignore" line bare
-  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || return 0
+
+# The paths a repo should be ignoring: one entry once plans and sessions are
+# nested under infra-llm/, the two separate paths while it is on an older
+# layout, plus the settings file either way.
+_llm_ignore_entries() {
+  local root="$1" plans sessions
+  plans="$(_llm_plans_dir "$root")"
+  sessions="$(_llm_sessions_dir "$root")"
+  case "$plans/$sessions" in
+    "$LLM_PLANS_DIR/$LLM_SESSIONS_DIR") printf '%s/ %s\n' "$LLM_STATE_DIR" "$LLM_ENV_FILE" ;;
+    *)                                  printf '%s/ %s %s/\n' "$plans" "$LLM_ENV_FILE" "$sessions" ;;
+  esac
+}
+
+# Append entries to one ignore file. $1 = path, $2 = label for the output,
+# $3 = "create" to write the file when it is missing, rest = the entries.
+# Never duplicates: an entry already there in any spelling is left alone.
+_llm_ignore_file() {
+  local file="$1" label="$2" create="$3" line bare
+  shift 3
 
   if [ ! -e "$file" ]; then
+    [ "$create" = "create" ] || return 0
     : > "$file" || return 0
-    _llm_ok "created  .gitignore"
+    _llm_ok "created  $label"
   elif [ -s "$file" ] && [ -n "$(tail -c 1 "$file")" ]; then
     # No trailing newline - don't glue our first entry onto the last line
     printf '\n' >> "$file"
   fi
 
-  for line in "plans/" "$LLM_ENV_FILE" ".claude/sessions/"; do
+  for line in "$@"; do
     bare="${line%/}"
     # Accept the entry however it is already written (with or without the
     # trailing slash or a leading /), so re-running never duplicates it
     if grep -qxE "/?${bare//./\\.}/?" "$file" 2>/dev/null; then
-      printf '  current  .gitignore: %s\n' "$line"
+      printf '  current  %s: %s\n' "$label" "$line"
       continue
     fi
     printf '%s\n' "$line" >> "$file"
-    _llm_ok "ignored  $line"
+    _llm_ok "ignored  $line  ($label)"
   done
+  return 0
+}
+
+_llm_gitignore() {
+  # Separate statements on purpose: bash expands every word of a `local` before
+  # assigning any of them, so "file=$root/..." on the same line would read
+  # whatever $root happened to be in the caller's scope, not $1.
+  local root="$1" entries
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  entries="$(_llm_ignore_entries "$root")"
+
+  # shellcheck disable=SC2086  # entries is a deliberately word-split list
+  _llm_ignore_file "$root/.gitignore" ".gitignore" create $entries
 
   # An already-tracked file keeps being tracked no matter what .gitignore says
   local tracked
-  tracked="$(git -C "$root" ls-files -- '.claude/sessions' 'plans' 2>/dev/null | head -3)"
+  tracked="$(git -C "$root" ls-files -- "$(_llm_sessions_dir "$root")" "$(_llm_plans_dir "$root")" 2>/dev/null | head -3)"
   if [ -n "$tracked" ]; then
     _llm_hm "already tracked by git despite .gitignore:"
     printf '%s\n' "$tracked" | sed 's/^/    /'
-    _llm_hm "untrack them yourself when ready: git rm -r --cached .claude/sessions plans"
+    _llm_hm "untrack them yourself when ready: git rm -r --cached $(_llm_sessions_dir "$root") $(_llm_plans_dir "$root")"
   fi
+}
+
+# Ignore files other tools read. Plan files and session transcripts have no
+# business in a docker build context or an npm tarball - they ship machine-local
+# scratch and bust the build cache on every edit.
+#
+# APPEND ONLY - never created. A repo that has no .dockerignore has decided
+# something by not having one, and --init turning up with a file it never asked
+# for is not a fix for a problem it does not have. The same goes for the rest:
+# .npmignore especially, where npm falls back to .gitignore when the file is
+# absent, so inventing one would start publishing whatever .gitignore was
+# keeping out of the tarball.
+#
+# .gitignore is the exception, handled separately above: without it the state
+# shows up untracked and gets committed, which is what the entry exists to stop.
+LLM_IGNORE_FILES=".dockerignore .npmignore .gcloudignore .vercelignore .prettierignore .eslintignore"
+
+# Which ignore files currently carry our entries - for the setup summary, so
+# "also kept out of the docker context" is visible rather than assumed.
+_llm_ignored_in() {
+  local root="$1" f out="" first
+  first="$(_llm_ignore_entries "$root" | cut -d' ' -f1)"
+  for f in .gitignore $LLM_IGNORE_FILES; do
+    [ -f "$root/$f" ] || continue
+    grep -qxE "/?${first%/}/?" "$root/$f" 2>/dev/null && out="$out $f"
+  done
+  printf '%s\n' "${out# }"
+}
+
+_llm_other_ignores() {
+  local root="$1" f entries
+  entries="$(_llm_ignore_entries "$root")"
+  for f in $LLM_IGNORE_FILES; do
+    [ -f "$root/$f" ] || continue
+    # shellcheck disable=SC2086  # entries is a deliberately word-split list
+    _llm_ignore_file "$root/$f" "$f" keep $entries
+  done
+  return 0
 }
 
 # ------------------------------------------------------------ slash commands
@@ -540,7 +723,7 @@ description: Run an infra-llm workflow command - review, pr, release, plan, step
 ---
 
 <!-- infra-llm:generated -->
-Generated by `infra-llm --init`. Don't edit this file - a re-run overwrites it;
+Generated by `infra-llm --agent`. Don't edit this file - a re-run overwrites it;
 change it in the infra checkout instead.
 
 Run `infra-llm $ARGUMENTS` and act on what it prints:
@@ -563,8 +746,18 @@ that brief rather than improvising - it carries the repo's real state.
 CMD
 }
 
+# $1 = repo root, or the Claude config dir itself when $2 says so: a repo keeps
+# its commands under .claude/commands, the user-level ones sit directly in the
+# config dir. $3 is what to call that directory in the output.
+_llm_commands_dir() {
+  local root="$1" at_home="${2:-0}"
+  if [ "$at_home" -eq 1 ]; then printf '%s/commands\n' "$root"
+  else printf '%s/.claude/commands\n' "$root"; fi
+}
+
 _llm_install_commands() {
-  local root="$1" dir="$root/.claude/commands" name file
+  local root="$1" at_home="${2:-0}" label="${3:-.claude/commands}" dir name file
+  dir="$(_llm_commands_dir "$root" "$at_home")"
   mkdir -p "$dir" || return 0
 
   # Drop the previous generation's names, ours only
@@ -579,11 +772,11 @@ _llm_install_commands() {
     file="$dir/$name.md"
     # Never clobber a command the repo wrote itself
     if [ -f "$file" ] && ! grep -qF "$LLM_CMD_MARK" "$file" 2>/dev/null; then
-      _llm_hm "kept     .claude/commands/$name.md (not generated by infra-llm)"
+      _llm_hm "kept     $label/$name.md (not generated by infra-llm)"
       continue
     fi
     if [ -f "$file" ] && [ "$(cat "$file")" = "$(_llm_command_md)" ]; then
-      printf '  current  .claude/commands/%s.md\n' "$name"
+      printf '  current  %s/%s.md\n' "$label" "$name"
       continue
     fi
     _llm_command_md > "$file"
@@ -592,14 +785,15 @@ _llm_install_commands() {
 }
 
 _llm_remove_commands() {
-  local root="$1" dir="$root/.claude/commands" name file
+  local root="$1" at_home="${2:-0}" label="${3:-.claude/commands}" dir name file
+  dir="$(_llm_commands_dir "$root" "$at_home")"
   [ -d "$dir" ] || return 0
   for name in $LLM_COMMANDS $LLM_COMMANDS_OLD; do
     file="$dir/$name.md"
     [ -f "$file" ] || continue
     if grep -qF "$LLM_CMD_MARK" "$file" 2>/dev/null; then
       rm -f "$file"
-      _llm_ok "removed  .claude/commands/$name.md"
+      _llm_ok "removed  $label/$name.md"
     fi
   done
   rmdir "$dir" 2>/dev/null || true
@@ -607,11 +801,12 @@ _llm_remove_commands() {
 
 # ----------------------------------------------------------------- installers
 
-_llm_install_claude() {
-  local root="$1" force="$2" want_vexp="$3" want_git="${4:-1}" want_cmds="${5:-1}" desired
+# The settings JSON to merge, with the opted-out PreToolUse guards dropped by
+# matcher (and PreToolUse dropped entirely when neither is wanted). Shared by
+# the per-repo install and --global so both honour --no-vexp / --no-git-guard.
+_llm_claude_settings_desired() {
+  local want_vexp="${1:-1}" want_git="${2:-1}" desired
   desired="$(_llm_claude_settings_json)"
-  # Drop the opted-out PreToolUse guards by matcher, keeping the other one, and
-  # drop PreToolUse entirely when neither is wanted.
   if { [ "$want_vexp" -eq 0 ] || [ "$want_git" -eq 0 ]; } && command -v jq >/dev/null 2>&1; then
     desired="$(printf '%s' "$desired" | jq \
       --argjson vexp "$want_vexp" --argjson git "$want_git" '
@@ -620,26 +815,150 @@ _llm_install_claude() {
       ))
       | if (.hooks.PreToolUse | length) == 0 then del(.hooks.PreToolUse) else . end')"
   fi
+  printf '%s\n' "$desired"
+}
+
+_llm_install_claude() {
+  local root="$1" force="$2" want_vexp="$3" want_git="${4:-1}" want_cmds="${5:-1}" want_docs="${6:-1}" desired
+  desired="$(_llm_claude_settings_desired "$want_vexp" "$want_git")"
   _llm_merge_hooks "$root/.claude/settings.json" "$desired" ".claude/settings.json"
-  mkdir -p "$root/.claude/sessions"
+  mkdir -p "$root/$(_llm_sessions_dir "$root")"
   [ "$want_cmds" -eq 1 ] && _llm_install_commands "$root"
-  _llm_doc_block "$root" "$(_llm_agent_doc "$root" claude)" "$force" claude
+  [ "$want_docs" -eq 1 ] && _llm_doc_block "$root" "$(_llm_agent_doc "$root" claude)" "$force" claude
+  return 0
 }
 
 _llm_install_codex() {
-  local root="$1" force="$2"
+  local root="$1" force="$2" want_docs="${3:-1}"
   _llm_merge_hooks "$root/.codex/hooks.json" "$(_llm_codex_hooks_json)" ".codex/hooks.json"
-  _llm_doc_block "$root" "AGENTS.md" "$force" codex
+  [ "$want_docs" -eq 1 ] && _llm_doc_block "$root" "AGENTS.md" "$force" codex
+  return 0
 }
 
-# Everything else takes instructions only - no hook API to wire
+# Everything else takes instructions only - no hook API to wire, so --no-docs
+# leaves nothing to install for them
 _llm_install_docs_agent() {
-  local root="$1" force="$2" agent="$3"
+  local root="$1" force="$2" agent="$3" want_docs="${4:-1}"
+  if [ "$want_docs" -eq 0 ]; then
+    _llm_hm "$agent takes instructions only - nothing to wire with --no-docs"
+    return 0
+  fi
   _llm_doc_block "$root" "$(_llm_agent_doc "$root" "$agent")" "$force" "$agent"
 }
 
-_llm_init() {
-  local force=0 docs_only=0 want_vexp=1 want_git=1 want_cmds=1 assume_yes=0 root="" chosen="" agent
+# What a repo keeps for itself, whether it carries its own wiring or runs off
+# the machine-wide install: the plan files, the session records, the .gitignore
+# entries for both, and .infra-llm.env - VERIFY_CMD is read from the repo, so a
+# globally-wired repo still needs that file.
+# Move one older directory into place. Only when the target isn't there yet -
+# two of them side by side is the one state the resolver can't reason about, so
+# never create it. A plain mv, not git mv: staging a rename the user didn't ask
+# for would be worse than leaving it to them, and the dirs are git-ignored.
+# Echoes the name it moved from, so the caller can repoint what pointed at it.
+_llm_migrate_dir() {
+  local root="$1" new="$2" old
+  shift 2
+  [ -e "$root/$new" ] && return 0
+  for old in "$@"; do
+    [ -d "$root/$old" ] || continue
+    mkdir -p "$(dirname "$root/$new")" 2>/dev/null
+    if mv "$root/$old" "$root/$new" 2>/dev/null; then
+      _llm_ok "moved    $old/ -> $new/" >&2
+      printf '%s\n' "$old"
+    else
+      _llm_no "could not move $old/ to $new/ - do it by hand" >&2
+    fi
+    return 0
+  done
+  return 0
+}
+
+# Bring a repo onto the current layout from whichever older one it is on.
+_llm_migrate_state() {
+  local root="$1" from_plans from_sessions
+
+  # shellcheck disable=SC2086  # the _OLD lists are deliberately word-split
+  from_plans="$(_llm_migrate_dir "$root" "$LLM_PLANS_DIR" $LLM_PLANS_DIRS_OLD)"
+  # shellcheck disable=SC2086
+  from_sessions="$(_llm_migrate_dir "$root" "$LLM_SESSIONS_DIR" $LLM_SESSIONS_DIRS_OLD)"
+
+  # .claude itself stays - Claude Code owns it - but drop it when the sessions
+  # we just moved were the only thing in there.
+  [ "$from_sessions" = ".claude/sessions" ] && rmdir "$root/.claude" 2>/dev/null
+  local moved=0
+  [ -n "$from_plans$from_sessions" ] && moved=1
+
+  # .active-plan lists plan files by path, so its contents move with them
+  local marker="$root/$LLM_PLANS_DIR/.active-plan"
+  if [ -n "$from_plans" ] && [ -f "$marker" ] && grep -q "^$from_plans/" "$marker" 2>/dev/null; then
+    local tmp; tmp="$(_llm_tmp)"
+    sed "s|^$from_plans/|$LLM_PLANS_DIR/|" "$marker" > "$tmp" && mv "$tmp" "$marker"
+    _llm_ok "repointed .active-plan at $LLM_PLANS_DIR/"
+  fi
+
+  [ "$moved" -eq 1 ] && _llm_hm "old paths in your own notes or scripts need updating by hand"
+  return 0
+}
+
+_llm_repo_state() {
+  local root="$1" old
+  _llm_migrate_state "$root"
+  mkdir -p "$root/$(_llm_plans_dir "$root")"
+  _llm_env_file "$root"
+  _llm_wt_prep "$root"
+  _llm_gitignore "$root"
+  _llm_other_ignores "$root"
+
+  # Renamed from these - say so rather than silently ignoring a repo's settings
+  for old in infra-llm.env .llm-verify.env .llm-git.env .agents/verify.env; do
+    [ -f "$root/$old" ] || continue
+    _llm_hm "$old is no longer read - move its settings into $LLM_ENV_FILE"
+  done
+  return 0
+}
+
+# Repo state only. The hooks, instruction blocks and /infra-llm command come
+# from --global (machine-wide) or --agent (this repo alone).
+_llm_init_state() {
+  local root="" arg
+  for arg in "$@"; do
+    case "$arg" in
+      # These used to be --init's, and doing half of what they ask - the state
+      # without the wiring - would look like it worked. Say where they moved.
+      --all|--claude|--codex|--cursor|--windsurf|--copilot|--gemini|--cline|--aider|\
+      --no-vexp|--no-git-guard|--no-git|--no-commands|--no-command|--no-docs|--no-instructions)
+        _llm_no "$arg wires an agent into the repo - that moved to: infra-llm --agent $*"
+        _llm_hm "--init now prepares repo state only ($LLM_PLANS_DIR/, $LLM_SESSIONS_DIR/, .gitignore, $LLM_ENV_FILE)"
+        return 1 ;;
+      -y|--yes|-f|--force) ;;   # harmless here, accepted so scripts don't break
+      -*) _llm_no "unknown option: $arg"; return 1 ;;
+      *)  root="$arg" ;;
+    esac
+  done
+  [ -n "$root" ] || root="$(_llm_target)"
+  [ -d "$root" ] || { _llm_no "no such directory: $root"; return 1; }
+
+  _llm_c "preparing repo state in $root"
+  _llm_repo_state "$root"
+  echo ""
+  _llm_ok "repo ready"
+  printf '  plans:    %-18s (plan files + .active-plan, git-ignored)\n' "$(_llm_plans_dir "$root")/"
+  printf '  sessions: %-18s (one file per session, last 10)\n' "$(_llm_sessions_dir "$root")/"
+  echo "  tune:     $LLM_ENV_FILE     (VERIFY_CMD, git guard - all optional)"
+  printf '  ignored:  %s\n' "$(_llm_ignored_in "$root")"
+  echo ""
+  echo "  hooks and instructions come from:"
+  echo "    infra-llm --global   every repo on this machine (one install)"
+  echo "    infra-llm --agent    this repo only (wired into the repo itself)"
+  return 0
+}
+
+# Wire this repo to carry the workflow itself: hooks, instruction block(s) and
+# the /infra-llm command, on top of the repo state --init prepares. Only needed
+# when --global is not in play, or when the repo must work for teammates and CI
+# who have no machine-wide install of their own.
+_llm_agent() {
+  local force=0 docs_only=0 want_vexp=1 want_git=1 want_cmds=1 want_docs=1 assume_yes=0 root="" chosen="" agent
   while [ $# -gt 0 ]; do
     case "$1" in
       -f|--force)  force=1 ;;
@@ -647,6 +966,7 @@ _llm_init() {
       --no-vexp)   want_vexp=0 ;;
       --no-git-guard|--no-git) want_git=0 ;;
       --no-commands|--no-command) want_cmds=0 ;;
+      --no-docs|--no-instructions) want_docs=0 ;;
       -y|--yes)    assume_yes=1 ;;
       --all)       chosen="$LLM_AGENTS" ;;
       --claude|--codex|--cursor|--windsurf|--copilot|--gemini|--cline|--aider)
@@ -689,9 +1009,7 @@ _llm_init() {
 
   _llm_c "wiring agent workflow into $root  [$chosen]"
   _llm_install_cli "$force"
-  mkdir -p "$root/plans"
-  _llm_env_file "$root"
-  _llm_wt_prep "$root"
+  _llm_repo_state "$root"
 
   for agent in $chosen; do
     case " $LLM_AGENTS " in
@@ -699,27 +1017,18 @@ _llm_init() {
       *) _llm_hm "unknown agent, skipped: $agent"; continue ;;
     esac
     case "$agent" in
-      claude) _llm_install_claude "$root" "$force" "$want_vexp" "$want_git" "$want_cmds" ;;
-      codex)  _llm_install_codex  "$root" "$force" ;;
-      *)      _llm_install_docs_agent "$root" "$force" "$agent" ;;
+      claude) _llm_install_claude "$root" "$force" "$want_vexp" "$want_git" "$want_cmds" "$want_docs" ;;
+      codex)  _llm_install_codex  "$root" "$force" "$want_docs" ;;
+      *)      _llm_install_docs_agent "$root" "$force" "$agent" "$want_docs" ;;
     esac
-  done
-
-  _llm_gitignore "$root"
-
-  # Renamed from these - say so rather than silently ignoring a repo's settings
-  local old
-  for old in infra-llm.env .llm-verify.env .llm-git.env .agents/verify.env; do
-    [ -f "$root/$old" ] || continue
-    _llm_hm "$old is no longer read - move its settings into $LLM_ENV_FILE"
   done
 
   echo ""
   _llm_ok "workflow ready for: $chosen"
   echo "  hooks:    ${LLM_HOOKS_DIR}  (run via 'infra-llm --hook …', not copied here)"
-  echo "  plans:    plans/            (plan files + .active-plan, git-ignored)"
+  printf '  plans:    %-18s (plan files + .active-plan, git-ignored)\n' "$(_llm_plans_dir "$root")/"
   case " $chosen " in *" claude "*)
-  echo "  sessions: .claude/sessions/ (one file per session, last 10)" ;;
+  printf '  sessions: %-18s (one file per session, last 10)\n' "$(_llm_sessions_dir "$root")/" ;;
   esac
   echo "  tune:     $LLM_ENV_FILE     (VERIFY_CMD, git guard - all optional)"
   case " $chosen " in *" claude "*)
@@ -732,11 +1041,11 @@ _llm_init() {
   esac
 }
 
-# A fresh worktree starts with no untracked state: give it its own plans/ and
+# A fresh worktree starts with no untracked state: give it its own plan and
 # sessions dir, and carry over the main checkout's verify config.
 _llm_wt_prep() {
   local root="${1:-$(_llm_target)}" main
-  mkdir -p "$root/plans" "$root/.claude/sessions"
+  mkdir -p "$root/$(_llm_plans_dir "$root")" "$root/$(_llm_sessions_dir "$root")"
   main="$(_llm_main_root "$root")"
   [ "$main" = "$root" ] && return 0
   if [ -f "$main/$LLM_ENV_FILE" ] && [ ! -e "$root/$LLM_ENV_FILE" ]; then
@@ -746,7 +1055,237 @@ _llm_wt_prep() {
   return 0
 }
 
+# ---------------------------------------------------------------- global block
+
+# Claude Code's own config directory: $CLAUDE_CONFIG_DIR when the user moved it,
+# ~/.claude otherwise. Following the same rule Claude Code does is what makes
+# this work unchanged on Linux, macOS, WSL and Git Bash on Windows - in every
+# one of them $HOME is the home the local Claude Code reads. (Native Windows
+# without a bash can't run this script at all.)
+_llm_claude_home() {
+  printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+}
+
+# Printable form of a path under the Claude home - "~/.claude/x" reads better
+# than the absolute path, but only when that is where it actually is.
+_llm_claude_home_label() {
+  local home; home="$(_llm_claude_home)"
+  case "$home" in
+    "$HOME"/*) printf '~/%s\n' "${home#"$HOME"/}" ;;
+    *)         printf '%s\n' "$home" ;;
+  esac
+}
+
+# Claude Code reads CLAUDE.md from its config dir in every project, so one block
+# there covers every repo on this machine: update the infra checkout and the
+# next session picks it up, with no --init sweep across repos. Claude-only - no
+# other agent has a user-level instruction file - and repos shared with
+# teammates still want their own block, which is why --init keeps writing one.
+# The protocol skills (step-plan, llm-workflow) live in the infra checkout and
+# `infra-llm --skill <name>` prints them on demand. Copied under the Claude
+# config dir they load on their own instead - their descriptions are written for
+# exactly that ("use at the START of any task with more than one step"), and an
+# agent that never runs the command still gets the protocol.
+_llm_install_protocol_skills() {
+  local home="$1" label="${2:-$1}" src name dest
+  for src in "$LLM_SKILLS_DIR"/*/SKILL.md; do
+    [ -f "$src" ] || continue
+    name="$(basename "$(dirname "$src")")"
+    dest="$home/skills/$name/SKILL.md"
+    if [ -f "$dest" ] && cmp -s "$src" "$dest"; then
+      printf '  current  %s/skills/%s/SKILL.md\n' "$label" "$name"
+      continue
+    fi
+    mkdir -p "$(dirname "$dest")" || continue
+    cp "$src" "$dest" || { _llm_no "could not write $label/skills/$name/SKILL.md"; continue; }
+    _llm_ok "skill    $label/skills/$name/SKILL.md"
+  done
+  return 0
+}
+
+# Take the copies back out - but only while they still match the checkout. An
+# edited copy is the user's now, and deleting someone's edited skill to "clean
+# up" is worse than leaving a file behind: say so and move on.
+_llm_remove_protocol_skills() {
+  local home="$1" label="${2:-$1}" src name dest
+  for src in "$LLM_SKILLS_DIR"/*/SKILL.md; do
+    [ -f "$src" ] || continue
+    name="$(basename "$(dirname "$src")")"
+    dest="$home/skills/$name/SKILL.md"
+    [ -f "$dest" ] || continue
+    if ! cmp -s "$src" "$dest"; then
+      _llm_hm "kept     $label/skills/$name/SKILL.md (edited since we wrote it)"
+      continue
+    fi
+    rm -f "$dest"
+    rmdir "$(dirname "$dest")" 2>/dev/null || true
+    _llm_ok "removed  $label/skills/$name/"
+  done
+  return 0
+}
+
+# Claude Code merges user-level and project-level hooks instead of letting one
+# win, so a repo wired with --init on a machine that also has --global runs
+# every hook twice: two stop decisions, the protocol injected twice, guards
+# reporting twice. Nothing breaks, but nothing says so either - hence this.
+# Prints only when both layers are wired; callers guard on the repo side.
+_llm_double_wired_warn() {
+  local home; home="$(_llm_claude_home)"
+  [ -f "$home/settings.json" ] || return 0
+  grep -q "infra-llm --hook" "$home/settings.json" 2>/dev/null || return 0
+  _llm_hm "this repo AND $(_llm_claude_home_label) both wire the hooks - each one fires twice"
+  _llm_hm "keep one: 'infra-llm --uninstall' here, or leave --global for machines without repo wiring"
+  return 0
+}
+
+# What is installed machine-wide, as one line: which pieces are in place, and
+# whether the instruction block still matches the template.
+_llm_global_state() {
+  local home label parts="" doc=""
+  home="$(_llm_claude_home)"
+  label="$(_llm_claude_home_label)"
+
+  if [ -f "$home/CLAUDE.md" ] && grep -qF "$LLM_DOC_START" "$home/CLAUDE.md" 2>/dev/null; then
+    if [ "$(_llm_doc_installed "$home/CLAUDE.md")" = "$(_llm_trim_blanks < "$LLM_TEMPLATE")" ]; then
+      doc="instructions"
+    else
+      doc="instructions(OUT OF DATE - run: infra-llm --global)"
+    fi
+    parts="$doc"
+  fi
+  [ -f "$home/settings.json" ] && grep -q "infra-llm --hook" "$home/settings.json" 2>/dev/null \
+    && parts="$parts hooks"
+  [ -f "$home/commands/infra-llm.md" ] && parts="$parts /infra-llm"
+
+  # Name every installed skill, and mark a copy that no longer matches the
+  # checkout - that one keeps its own text until the next --global.
+  local src name dest
+  for src in "$LLM_SKILLS_DIR"/*/SKILL.md; do
+    [ -f "$src" ] || continue
+    name="$(basename "$(dirname "$src")")"
+    dest="$home/skills/$name/SKILL.md"
+    [ -f "$dest" ] || continue
+    if cmp -s "$src" "$dest"; then parts="$parts $name"
+    else parts="$parts $name(STALE)"; fi
+  done
+  # design-review is generated rather than copied, so it is checked separately
+  if [ -f "$home/skills/design-review/SKILL.md" ]; then
+    if [ "$(cat "$home/skills/design-review/SKILL.md")" = "$(_llm_designer_skill_md)" ]; then
+      parts="$parts design-review"
+    else
+      parts="$parts design-review(STALE)"
+    fi
+  fi
+
+  if [ -z "$parts" ]; then
+    printf 'none (infra-llm --global wires every repo on this machine at once)\n'
+  else
+    printf '%s:%s\n' "$label" "$parts"
+  fi
+}
+
+_llm_global() {
+  local force=0 remove=0 want_vexp=1 want_git=1 want_hooks=1 want_cmds=1 want_skill=1 want_designer=0 home label file="CLAUDE.md"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -f|--force)                     force=1 ;;
+      -r|--remove|remove|--uninstall) remove=1 ;;
+      --no-vexp)                      want_vexp=0 ;;
+      --no-git-guard|--no-git)        want_git=0 ;;
+      --no-hooks)                     want_hooks=0 ;;
+      --no-commands|--no-command)     want_cmds=0 ;;
+      --no-skill|--no-skills)         want_skill=0 ;;
+      --designer|--design-review)     want_designer=1 ;;
+      -*) _llm_no "unknown option: $1"; return 1 ;;
+    esac
+    shift
+  done
+  home="$(_llm_claude_home)"
+  label="$(_llm_claude_home_label)"
+
+  if [ "$remove" -eq 1 ]; then
+    local found=0
+    [ -f "$home/$file" ] && grep -qF "$LLM_DOC_START" "$home/$file" 2>/dev/null && found=1
+    [ -f "$home/settings.json" ] && grep -q "infra-llm --hook" "$home/settings.json" 2>/dev/null && found=1
+    [ -f "$home/commands/infra-llm.md" ] && found=1
+    [ -f "$home/skills/design-review/SKILL.md" ] && found=1
+    local s
+    for s in "$LLM_SKILLS_DIR"/*/SKILL.md; do
+      [ -f "$s" ] || continue
+      [ -f "$home/skills/$(basename "$(dirname "$s")")/SKILL.md" ] && found=1
+    done
+    if [ "$found" -eq 0 ]; then
+      _llm_hm "nothing of ours in $label - nothing to remove"
+      return 0
+    fi
+
+    _llm_c "removing the machine-wide workflow from $label"
+    _llm_doc_strip "$home" "$file"
+    # A CLAUDE.md that held nothing but our block is now empty - don't leave a
+    # stray file behind. Anything the user wrote there keeps it.
+    [ -f "$home/$file" ] && [ -z "$(tr -d '[:space:]' < "$home/$file")" ] && rm -f "$home/$file"
+    _llm_unmerge_hooks "$home/settings.json" "$label/settings.json"
+    _llm_remove_commands "$home" 1 "$label/commands"
+    _llm_designer --remove --at "$home" "$label"
+    _llm_remove_protocol_skills "$home" "$label"
+    rmdir "$home/skills" 2>/dev/null || true
+    # The CLI launcher stays: per-repo wiring and the hooks in other checkouts
+    # still call it, and it is what the user types.
+    _llm_hm "left alone: repo wiring, $LLM_PLANS_DIR/, $LLM_SESSIONS_DIR/ and the infra-llm CLI"
+    return 0
+  fi
+
+  _llm_c "installing the workflow into $label  [every repo on this machine]"
+  _llm_assets_ok || return 1
+  _llm_install_cli "$force"
+  _llm_doc_block "$home" "$file" "$force" claude || return 1
+
+  # User-level hooks fire in every project Claude Code opens here, not just the
+  # wired ones - the git guard included. --no-git-guard / --no-vexp / --no-hooks
+  # are the way out, and they mean the same thing they do for --init.
+  if [ "$want_hooks" -eq 1 ]; then
+    _llm_merge_hooks "$home/settings.json" \
+      "$(_llm_claude_settings_desired "$want_vexp" "$want_git")" "$label/settings.json"
+  fi
+
+  # A personal command works in every project, so /infra-llm needs generating
+  # only once instead of in each repo.
+  [ "$want_cmds" -eq 1 ] && _llm_install_commands "$home" 1 "$label/commands"
+
+  # step-plan and llm-workflow are the workflow itself, so they come along. The
+  # design-review skill is not: it pulls in impeccable, the emilkowalski skills
+  # and the chrome-devtools MCP, which is a choice per repo - "--global
+  # --designer" opts into it everywhere, "infra-llm --designer" into one repo.
+  if [ "$want_skill" -eq 1 ]; then
+    _llm_install_protocol_skills "$home" "$label"
+    [ "$want_designer" -eq 1 ] && _llm_designer --at "$home" "$label"
+  fi
+
+  echo "  covers: every project Claude Code opens as $(id -un)"
+  if [ "$want_hooks" -eq 1 ]; then
+    if [ "$want_git" -eq 1 ]; then
+      echo "  hooks:  machine-wide, git guard included (--no-git-guard to leave git alone)"
+    else
+      echo "  hooks:  machine-wide, git guard skipped"
+    fi
+  else
+    echo "  hooks:  none (instruction block only)"
+  fi
+  echo "  note:   Claude Code only - other agents still need a per-repo block"
+  [ "$want_skill" -eq 1 ] && [ "$want_designer" -eq 0 ] && \
+    echo "  design: design-review not installed (optional) - add it with --global --designer"
+  echo "  remove: infra-llm --global --remove"
+}
+
 _llm_uninstall() {
+  # "--uninstall --global" is the obvious way to ask for the machine-wide
+  # teardown, so honour it instead of quietly unwiring the repo you stand in.
+  case " $* " in
+    *" --global "*|*" --user "*|*" global "*)
+      _llm_global --remove
+      return $? ;;
+  esac
+
   local root; root="$(_llm_target)"
   _llm_c "removing agent workflow wiring from $root"
   _llm_unmerge_hooks "$root/.claude/settings.json" ".claude/settings.json"
@@ -757,7 +1296,15 @@ _llm_uninstall() {
     _llm_doc_strip "$root" "$(_llm_agent_doc "$root" "$agent")"
   done
   _llm_doc_strip "$root" ".claude/CLAUDE.md"
-  _llm_hm "plans/ and .claude/sessions/ were left alone"
+
+  # Skills we generated here go too - design-review, and any protocol skill a
+  # --global-style install left in the repo. Same terms as the global sweep: an
+  # edited copy is the repo's own now and is reported rather than deleted.
+  _llm_designer --remove --at "$root/.claude" ".claude"
+  _llm_remove_protocol_skills "$root/.claude" ".claude"
+  rmdir "$root/.claude/skills" 2>/dev/null || true
+
+  _llm_hm "$(_llm_plans_dir "$root")/ and $(_llm_sessions_dir "$root")/ were left alone"
 }
 
 # -------------------------------------------------------------------- designer
@@ -808,47 +1355,92 @@ styles, spacing and contrast on the actual elements, check the console and
 network for new errors, and run a performance/accessibility pass when those
 matter. Iterate until the rendered page matches what the audit asked for.
 
+Use the browser the user already has open. The `chrome-devtools` MCP server is
+registered with `--autoConnect`, so it attaches to their running Chrome and
+their logged-in profile - open a new tab there and work in it. Never ask which
+browser or profile to use, never start a second profile, and prefer the
+`chrome-devtools` server over any plugin-provided duplicate, which launches its
+own empty one.
+
+Check which browser you got before reporting anything. When remote debugging is
+off the server falls back to a throwaway profile and every call still succeeds -
+so the screenshot looks fine while the user stares at a browser you never
+touched. A page list holding one `about:blank` and none of their tabs means you
+are in that scratch profile: stop, say so, and give them the fix.
+
+1. open `chrome://inspect/#remote-debugging` (needs Chrome 144+)
+2. enable remote debugging, then restart Chrome
+3. restart the agent session so the MCP server reconnects
+
 Done means: no unaddressed anti-patterns, motion reviewed, and the change seen
-working in the browser with no new console or network errors.
+working in the user's own browser with no new console or network errors.
 SKILL
 }
 
-# Generate the design-review skill into the current repo's .claude/skills so
-# Claude Code auto-loads it. --remove / -r tears it down again.
+# Generate the design-review skill where Claude Code auto-loads it: a repo's
+# .claude/skills, or the config dir's skills/ when --global installs it for
+# every project. --remove / -r tears it down again.
+#
+# $1/--at <dir> = the skills/ parent to write into, $2 = what to call it in the
+# output. Called with no target it works on the current repo, as before.
 _llm_designer() {
-  local root name dir file remove=0
+  local root name dir file remove=0 at="" label=""
   name="design-review"
   while [ $# -gt 0 ]; do
     case "$1" in
       -r|--remove|remove|--uninstall) remove=1 ;;
+      --at)   at="$2"; label="${3:-$2}"; shift 2 ;;
       -*) _llm_no "unknown option: $1"; return 1 ;;
     esac
     shift
   done
 
-  root="$(_llm_target)"
-  dir="$root/.claude/skills/$name"
+  if [ -n "$at" ]; then
+    dir="$at/skills/$name"
+    label="${label:-$at}/skills/$name"
+  else
+    root="$(_llm_target)"
+    dir="$root/.claude/skills/$name"
+    label=".claude/skills/$name"
+  fi
   file="$dir/SKILL.md"
 
   if [ "$remove" -eq 1 ]; then
     if [ ! -e "$file" ] && [ ! -d "$dir" ]; then
-      _llm_hm "no design-review skill here - nothing to remove"
+      _llm_hm "no design-review skill in $label - nothing to remove"
+      return 0
+    fi
+    # --global sweeps this up on the way past (older runs installed it), so an
+    # edited copy is left where it is - the user either wrote it or changed it.
+    # A direct "infra-llm --designer --remove" asked for this file by name, so
+    # it goes either way.
+    if [ -n "$at" ] && [ -f "$file" ] && [ "$(cat "$file")" != "$(_llm_designer_skill_md)" ]; then
+      _llm_hm "kept     $label/SKILL.md (edited since we wrote it)"
       return 0
     fi
     rm -f "$file"
     # Drop the skill directory too, but only if it's now empty (never clobber
     # anything the user added alongside it).
     rmdir "$dir" 2>/dev/null || true
-    _llm_ok "removed .claude/skills/$name/"
+    _llm_ok "removed $label/"
     return 0
   fi
 
-  _llm_c "installing the design-review skill into $root"
-  mkdir -p "$dir"
-  _llm_designer_skill_md > "$file"
-  _llm_ok "wrote .claude/skills/$name/SKILL.md"
-  echo "  uses:   impeccable · emilkowalski/skills · chrome-devtools MCP"
-  echo "  remove: infra-llm --designer --remove"
+  if [ -f "$file" ] && [ "$(cat "$file")" = "$(_llm_designer_skill_md)" ]; then
+    printf '  current  %s/SKILL.md\n' "$label"
+  else
+    mkdir -p "$dir"
+    _llm_designer_skill_md > "$file"
+    _llm_ok "skill    $label/SKILL.md"
+  fi
+
+  # Run on its own rather than as part of --global? Then this output is all the
+  # user gets, so say what the skill pulls in and how to undo it.
+  if [ -z "$at" ]; then
+    echo "  uses:   impeccable · emilkowalski/skills · chrome-devtools MCP"
+    echo "  remove: infra-llm --designer --remove"
+  fi
+  return 0
 }
 
 # ------------------------------------------------------------------ worktrees
@@ -889,7 +1481,7 @@ _llm_plan_line() {
 }
 
 # Every worktree of this repo with its own plan state - each one carries its
-# own plans/ and .claude/sessions/, so agents can run in parallel without
+# own plan dir and session records, so agents can run in parallel without
 # stepping on each other.
 _llm_worktrees() {
   local root here path="" branch="" rows=0 line
@@ -908,7 +1500,7 @@ _llm_worktrees() {
     printf '%s%-23s %-22s %-34s %s\n' \
       "$mark" "$(basename "$path")" "${branch:-(detached)}" \
       "$(_llm_plan_line "$path")" \
-      "$(ls -1 "$path/.claude/sessions"/*.md 2>/dev/null | _llm_count)"
+      "$(ls -1 "$path/$(_llm_sessions_dir "$path")"/*.md 2>/dev/null | _llm_count)"
     rows=$((rows + 1))
     path=""; branch=""
   }
@@ -923,7 +1515,7 @@ _llm_worktrees() {
   unset -f emit
 
   echo ""
-  echo "plans/ and .claude/sessions/ are untracked, so each worktree keeps its own"
+  echo "$LLM_PLANS_DIR/ and $LLM_SESSIONS_DIR/ are untracked, so each worktree keeps its own"
   echo "active plan and its own session history - parallel agents don't collide."
   [ "$rows" -gt 1 ] || echo "add one with: gwtadd <branch>"
 }
@@ -1018,6 +1610,28 @@ _llm_doctor() {
   fi
 
   echo ""
+  echo "machine-wide install"
+  local ghome; ghome="$(_llm_claude_home)"
+  printf '  config:   %s%s\n' "$(_llm_claude_home_label)" \
+    "$([ -n "$CLAUDE_CONFIG_DIR" ] && printf ' (CLAUDE_CONFIG_DIR)')"
+  printf '  state:    %s\n' "$(_llm_global_state)"
+  if [ -f "$ghome/settings.json" ] && grep -q "infra-llm --hook" "$ghome/settings.json" 2>/dev/null; then
+    if grep -q "git-guard" "$ghome/settings.json" 2>/dev/null; then
+      _llm_hm "these hooks run in EVERY project on this machine, git guard included"
+    else
+      _llm_hm "these hooks run in EVERY project on this machine (git guard not among them)"
+    fi
+    warns=$((warns + 1))
+    # Same check --status makes: the repo we are standing in may wire them too
+    local droot; droot="$(_llm_target)"
+    if [ -f "$droot/.claude/settings.json" ] && \
+       grep -q "infra-llm --hook" "$droot/.claude/settings.json" 2>/dev/null; then
+      _llm_double_wired_warn
+      warns=$((warns + 1))
+    fi
+  fi
+
+  echo ""
   echo "launcher"
   if [ -x "${LLM_BIN_DIR}/infra-llm" ]; then
     case ":$PATH:" in
@@ -1026,7 +1640,7 @@ _llm_doctor() {
          fails=$((fails + 1)) ;;
     esac
   else
-    _llm_hm "not installed yet - run: infra-llm --init"
+    _llm_hm "not installed yet - run: infra-llm --global (or --agent in one repo)"
     warns=$((warns + 1))
   fi
 
@@ -1051,13 +1665,13 @@ _llm_doctor() {
   echo ""
   echo "hook smoke test"
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/infra-llm-doctor.XXXXXX")" || return 1
-  mkdir -p "$tmp/plans"
-  printf 'plans/t.md\n' > "$tmp/plans/.active-plan"
-  printf -- '- [ ] a test step\n' > "$tmp/plans/t.md"
+  mkdir -p "$tmp/$LLM_PLANS_DIR"
+  printf '%s/t.md\n' "$LLM_PLANS_DIR" > "$tmp/$LLM_PLANS_DIR/.active-plan"
+  printf -- '- [ ] a test step\n' > "$tmp/$LLM_PLANS_DIR/t.md"
 
   out="$( cd "$tmp" && bash "$LLM_HOOKS_DIR/steps-status.sh" 2>/dev/null )"
   case "$out" in
-    REMAINING*plans/t.md*) printf '  ok       steps-status\n' ;;
+    REMAINING*/t.md*) printf '  ok       steps-status\n' ;;
     *) _llm_no "steps-status returned: ${out:-<nothing>}"; fails=$((fails + 1)) ;;
   esac
 
@@ -1067,7 +1681,7 @@ _llm_doctor() {
     *) _llm_no "steps-guard returned: ${out:-<nothing>}"; fails=$((fails + 1)) ;;
   esac
 
-  out="$( cd "$tmp" && printf '{"prompt":"work on plans/t.md"}' | bash "$LLM_HOOKS_DIR/plan-prompt.sh" 2>/dev/null | head -1 )"
+  out="$( cd "$tmp" && printf '{"prompt":"work on %s/t.md"}' "$LLM_PLANS_DIR" | bash "$LLM_HOOKS_DIR/plan-prompt.sh" 2>/dev/null | head -1 )"
   case "$out" in
     STEP-BY-STEP*) printf '  ok       plan-prompt\n' ;;
     *) _llm_no "plan-prompt returned: ${out:-<nothing>}"; fails=$((fails + 1)) ;;
@@ -1135,7 +1749,7 @@ _llm_status() {
   elif [ -n "$launcher" ] && [ -f "$launcher" ]; then
     echo "cli:      $launcher"
   else
-    echo "cli:      not installed (hooks need it - run: infra-llm --init)"
+    echo "cli:      not installed (hooks need it - run: infra-llm --global)"
   fi
 
   local agent markers line=""
@@ -1150,6 +1764,9 @@ _llm_status() {
     [ -f "$root/$f" ] && grep -q "infra-llm --hook" "$root/$f" 2>/dev/null && wired="$wired $f"
   done
   echo "wiring:  ${wired:- none}"
+  case "$wired" in
+    *.claude/settings.json*) _llm_double_wired_warn ;;
+  esac
 
   local docs="" agent2
   for agent2 in $LLM_AGENTS; do
@@ -1159,6 +1776,10 @@ _llm_status() {
   f=".claude/CLAUDE.md"
   [ -f "$root/$f" ] && grep -qF "$LLM_DOC_START" "$root/$f" 2>/dev/null && docs="$docs $f"
   echo "docs:    ${docs:- none}"
+
+  # The user-level install covers every repo Claude Code opens here, so a repo
+  # with no wiring of its own still works when this one is in place.
+  echo "global:  $(_llm_global_state)"
 
   local status
   status="$( cd "$root" && bash "$LLM_HOOKS_DIR/steps-status.sh" 2>/dev/null )"
@@ -1170,7 +1791,7 @@ _llm_status() {
     *)             echo "plan:     none active" ;;
   esac
 
-  echo "sessions: $(ls -1 "$root/.claude/sessions"/*.md 2>/dev/null | _llm_count) recorded"
+  echo "sessions: $(ls -1 "$root/$(_llm_sessions_dir "$root")"/*.md 2>/dev/null | _llm_count) recorded"
   if [ -f "$root/.claude/commands/infra-llm.md" ]; then
     echo "command:  /infra-llm (generated; --init --no-commands to skip)"
   else
@@ -1187,7 +1808,13 @@ _llm_status() {
     echo "git:      guard not wired (agent git writes rely on instructions only)"
   fi
 
-  [ -z "$wired$docs" ] && _llm_hm "not wired up here yet - run: infra-llm --init"
+  if [ -z "$wired$docs" ]; then
+    # A repo with no wiring of its own is fine when --global covers the machine
+    case "$(_llm_global_state)" in
+      none*) _llm_hm "nothing wired here and no machine-wide install - run: infra-llm --global, or --agent for this repo alone" ;;
+      *)     _llm_hm "no wiring in this repo - running off the machine-wide install above" ;;
+    esac
+  fi
   return 0
 }
 
@@ -1201,8 +1828,8 @@ _llm_plan() {
   fi
   root="$(_llm_target)"
   slug="${slug%.md}"
-  file="plans/${slug}.md"
-  mkdir -p "$root/plans"
+  file="$(_llm_plans_dir "$root")/${slug}.md"
+  mkdir -p "$root/$(_llm_plans_dir "$root")"
   if [ ! -f "$root/$file" ]; then
     cat > "$root/$file" <<EOF
 # ${slug}
@@ -1217,9 +1844,10 @@ hook reads that line back as the next instruction. Detail goes underneath it.
 EOF
     _llm_ok "created  $file"
   fi
-  touch "$root/plans/.active-plan"
-  grep -qxF "$file" "$root/plans/.active-plan" || printf '%s\n' "$file" >> "$root/plans/.active-plan"
-  _llm_ok "registered $file in plans/.active-plan"
+  touch "$root/$(_llm_plans_dir "$root")/.active-plan"
+  grep -qxF "$file" "$root/$(_llm_plans_dir "$root")/.active-plan" \
+    || printf '%s\n' "$file" >> "$root/$(_llm_plans_dir "$root")/.active-plan"
+  _llm_ok "registered $file in $(_llm_plans_dir "$root")/.active-plan"
 }
 
 # Print the review brief plus the scope of the change to review. Read-only:
@@ -1307,8 +1935,8 @@ _llm_git_window() {
   secs="$( [ -f "$root/$LLM_ENV_FILE" ] && ( . "$root/$LLM_ENV_FILE" 2>/dev/null; printf '%s' "${GIT_WINDOW_SECONDS:-}" ) )"
   case "$secs" in ''|*[!0-9]*) secs=1800 ;; esac
   [ "$secs" -eq 0 ] && return 0          # GIT_WINDOW_SECONDS=0 opts out
-  mkdir -p "$root/plans" 2>/dev/null || return 0
-  printf '%s %s\n' "$(( $(date +%s) + secs ))" "$why" > "$root/plans/.git-window"
+  mkdir -p "$root/$(_llm_plans_dir "$root")" 2>/dev/null || return 0
+  printf '%s %s\n' "$(( $(date +%s) + secs ))" "$why" > "$root/$(_llm_plans_dir "$root")/.git-window"
   printf '\nGit: commit/push/tag are allowed for the next %s minutes (opened by this command).\n' "$((secs / 60))"
   printf 'Do the work - commit, push, and create it - instead of handing commands back.\n'
 }
@@ -1473,9 +2101,9 @@ _llm_skill() {
 # -------------------------------------------------------------------- sessions
 
 _llm_sessions() {
-  local root dir; root="$(_llm_target)"; dir="$root/.claude/sessions"
+  local root dir; root="$(_llm_target)"; dir="$root/$(_llm_sessions_dir "$root")"
   if [ ! -d "$dir" ]; then
-    _llm_hm "no session records here yet - run: infra-llm --init"
+    _llm_hm "no session records here yet - run: infra-llm --init to prepare this repo"
     return 0
   fi
   if [ -n "$1" ]; then
@@ -1499,7 +2127,7 @@ _llm_sessions() {
 # claude, with session recording guaranteed to be wired in this directory first
 claude_session() {
   local root; root="$(_llm_target)"
-  mkdir -p "$root/.claude/sessions"
+  mkdir -p "$root/$(_llm_sessions_dir "$root")"
   if ! grep -q "infra-llm --hook session" "$root/.claude/settings.json" 2>/dev/null; then
     _llm_c "wiring session records into $root"
     _llm_install_cli 0
@@ -1514,8 +2142,10 @@ infra-llm() {
   local cmd="${1:---status}"
   [ $# -gt 0 ] && shift
   case "$cmd" in
-    --init|init)           _llm_init "$@" ;;
-    --docs|docs)           _llm_init --docs "$@" ;;
+    --init|init)           _llm_init_state "$@" ;;
+    --agent|agent)         _llm_agent "$@" ;;
+    --docs|docs)           _llm_agent --docs "$@" ;;
+    --global|global|--user|user) _llm_global "$@" ;;
     --status|status)       _llm_status ;;
     --doctor|doctor|--check|check) _llm_doctor ;;
     --plan|plan)           _llm_plan "$@" ;;
@@ -1531,14 +2161,18 @@ infra-llm() {
     --designer|designer)   _llm_designer "$@" ;;
     --hook|hook)           _llm_hook "$@" ;;
     --cli)                 _llm_install_cli 1 ;;
-    --uninstall|uninstall) _llm_uninstall ;;
+    --uninstall|uninstall) _llm_uninstall "$@" ;;
     -h|--help|help)
-      sed -n '3,37p' "${LLM_INFRA_DIR}/llm.sh" | sed 's/^# \{0,1\}//' ;;
+      # The header comment is the help text: everything from line 3 up to the
+      # first non-comment line, so adding a section can't truncate the output.
+      awk 'NR > 2 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "${LLM_INFRA_DIR}/llm.sh" ;;
     *) _llm_no "unknown command: $cmd"; return 1 ;;
   esac
 }
 
 alias llminit='infra-llm --init'
+alias llmagent='infra-llm --agent'
+alias llmglobal='infra-llm --global'
 alias llmdocs='infra-llm --docs'
 alias llmstatus='infra-llm --status'
 alias llmdoctor='infra-llm --doctor'

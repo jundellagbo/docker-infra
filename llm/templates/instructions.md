@@ -1,29 +1,29 @@
 ## Step-by-step execution protocol (infra-llm)
 
 Multi-step work in this repo is tracked with `- [ ]` / `- [x]` checkboxes
-**directly in the plan file** under `plans/` (registered in
-`plans/.active-plan`, git-ignored). The hooks that enforce this live outside
-the repo and are driven through the `infra-llm` command, so nothing is vendored
-in here. Run `infra-llm --skill step-plan` for the full protocol.
+**directly in the plan file** under `infra-llm/plans/` (registered in
+`infra-llm/plans/.active-plan`, git-ignored). The hooks that enforce this live
+outside the repo and are driven through the `infra-llm` command, so nothing is
+vendored in here. Run `infra-llm --skill step-plan` for the full protocol.
 
 ### Commands
 
 | Command                    | What it does                                                     |
 | -------------------------- | ---------------------------------------------------------------- |
-| `infra-llm --plan <slug>`  | create `plans/<slug>.md` and register it as the active plan       |
+| `infra-llm --plan <slug>`  | create `infra-llm/plans/<slug>.md` and register it as active      |
 | `infra-llm --steps`        | the next unchecked step the stop hook will demand                 |
 | `infra-llm --verify`       | run this repo's checks and close out the plan                     |
 | `infra-llm --code-review`  | review brief + the scope of the recent changes                    |
 | `infra-llm --pull-request` | PR brief + this branch's commits, status and existing PR          |
 | `infra-llm --create-release` | release brief + tags, published releases and commits since       |
-| `infra-llm --sessions`     | past session records in `.claude/sessions/`                       |
+| `infra-llm --sessions`     | past session records in `infra-llm/sessions/`                     |
 | `infra-llm --status`       | wiring, active plan, git-guard mode, session count                |
 | `infra-llm --skill <name>` | print a protocol skill (`step-plan`, `llm-workflow`)              |
 
 ### How to work
 
-1. When a task has more than one step — or the prompt names a `plans/*.md`
-   file — read the plan and convert **EVERY** discrete item into its own
+1. When a task has more than one step — or the prompt names a plan file —
+   read the plan and convert **EVERY** discrete item into its own
    `- [ ]` checkbox, editing the plan file in place. It is the checklist; there
    is no separate progress file. For ad-hoc work, `infra-llm --plan <slug>`
    creates and registers one.
@@ -61,9 +61,9 @@ Use the `skill-creator` plugin skill when the user asks you to add or rework a
 **skill, instruction file or command** — its frontmatter description is what
 decides whether the thing ever triggers, and that is easy to get wrong by hand.
 
-**Not for plans.** A plan is just the checkbox checklist in `plans/`; write it
-directly and get on with the work — skill-creator's drafting and eval loop is
-pure overhead there.
+**Not for plans.** A plan is just the checkbox checklist in `infra-llm/plans/`;
+write it directly and get on with the work — skill-creator's drafting and eval
+loop is pure overhead there.
 
 ### Git
 
@@ -107,15 +107,41 @@ alone and why. Stop and describe instead of applying when a fix would be large,
 risky, or would change intended behaviour — and argue against a finding you
 believe is wrong rather than "fixing" it.
 
+### Browser work — chrome-devtools MCP
+
+Asked to open, inspect, screenshot or debug a page, drive the browser the user
+already has open. The `chrome-devtools` MCP server is registered with
+`--autoConnect`, so it attaches to their running Chrome and its logged-in
+profile — open a new tab there and work in it. Never ask which browser or
+profile to use, and never launch a second one: a fresh profile has none of their
+sessions, so what you see isn't what they see. Prefer the `chrome-devtools`
+server over a plugin-provided duplicate that lacks the flag.
+
+**Check which browser you got, before reporting anything.** The failure is
+silent: when remote debugging is off the server attaches to a throwaway profile
+and every call still succeeds, so a screenshot looks fine while the user is
+staring at a browser you never touched. A page list holding one `about:blank`
+and none of their tabs means you are in that scratch profile. Stop there, say
+so, and give them the fix — a "done" reported from a browser they can't see is
+worse than an error:
+
+1. open `chrome://inspect/#remote-debugging` (needs Chrome 144+)
+2. enable remote debugging, then restart Chrome
+3. restart the agent session so the MCP server reconnects
+
+Being switched off leaves `DevToolsActivePort` behind, so that file existing is
+not evidence the connection works. Relaunching with `--remote-debugging-port`
+isn't a workaround either — Chrome ignores it on the default user data dir since
+version 136.
+
 ### Worktrees
 
-`plans/` and `.claude/sessions/` are untracked, so **every git worktree has its
-own active plan and its own session history** — agents in different worktrees
-run in parallel without colliding. Work only in the worktree you were started
-in: never edit another worktree's `plans/`, and never assume a plan you can't
-see in this directory. `infra-llm --worktrees` lists every worktree with its
+`infra-llm/` is untracked, so **every worktree has its own active plan and its
+own session history** — agents in different worktrees run in parallel without
+colliding. Work only in the worktree you were started in: never edit another
+worktree's plan files, and never assume a plan you can't see in this directory. `infra-llm --worktrees` lists every worktree with its
 plan state.
 
 Session records for the last 10 sessions are written to
-`.claude/sessions/<session-id>.md`; read them to recover what an earlier
+`infra-llm/sessions/<session-id>.md`; read them to recover what an earlier
 session was asked to do.

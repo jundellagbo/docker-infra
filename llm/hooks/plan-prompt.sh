@@ -1,18 +1,21 @@
 #!/bin/bash
 # UserPromptSubmit hook (Claude Code + Codex): when the user's prompt
-# references a plan file in plans/ (e.g. plans/agent.md, plans/feature.md),
-# register it in plans/.active-plan and inject the step-by-step protocol:
+# references a plan file (infra-llm/plans/feature.md, or one of the older
+# layouts in a repo that has not migrated), register it in <plans>/.active-plan
+# and inject the step-by-step protocol:
 # progress is tracked with checkboxes directly in that plan file. Plain
 # stdout is added as context by both Claude Code and Codex; empty output
 # injects nothing.
 INPUT=$(cat)
 
 refs=$(printf '%s' "$INPUT" \
-  | grep -oE 'plans/[A-Za-z0-9._ -]+\.md' | sort -u)
+  | grep -oE '(infra-llm/plans|infra-llm-plans|plans)/[A-Za-z0-9._ -]+\.md' | sort -u)
 [ -z "$refs" ] && exit 0
 
-mkdir -p plans
-ACTIVE="plans/.active-plan"
+. "$(dirname "$0")/state-dirs.sh"
+PLANS="$(llm_plans_dir)"
+mkdir -p "$PLANS"
+ACTIVE="$PLANS/.active-plan"
 touch "$ACTIVE"
 while IFS= read -r ref; do
   grep -qxF "$ref" "$ACTIVE" || printf '%s\n' "$ref" >> "$ACTIVE"
@@ -21,7 +24,7 @@ done <<< "$refs"
 refs_line=$(printf '%s' "$refs" | paste -sd ' ' -)
 
 cat <<EOF
-STEP-BY-STEP PROTOCOL (this prompt references plan file(s): $refs_line — now registered in plans/.active-plan)
+STEP-BY-STEP PROTOCOL (this prompt references plan file(s): $refs_line — now registered in $ACTIVE)
 
 1. Read the plan file(s) and convert EVERY discrete item into its own
    '- [ ]' checkbox, editing the file in place — the plan file itself is the
@@ -33,7 +36,7 @@ STEP-BY-STEP PROTOCOL (this prompt references plan file(s): $refs_line — now r
 3. When every step is checked, run: infra-llm --verify
    (the repo's own VERIFY_CMD if it has one, container-log check, code-review
    gate) and fix failures until it prints VERIFY OK — on success it clears
-   plans/.active-plan so the session can end.
+   the active-plan marker so the session can end.
 
 Anything you write for a later agent to follow — plan, instructions, skill,
 brief — stays short, specific and imperative. Write the plan file directly:

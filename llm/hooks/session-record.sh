@@ -1,6 +1,6 @@
 #!/bin/bash
 # session-record: on SessionEnd, write one file per session to
-# .claude/sessions/<session-id>.md holding the date, the session id, and every
+# <sessions>/<session-id>.md holding the date, the session id, and every
 # task requested in that session. Hard-capped at the 10 most recent sessions -
 # CLAUDE_SESSIONS_KEEP can lower that, never raise it.
 # Nothing is written while the session runs — the entry is reconstructed from
@@ -9,7 +9,8 @@
 set -u
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-.}"
-SESSIONS_DIR="$PROJECT_DIR/.claude/sessions"
+. "$(dirname "$0")/state-dirs.sh"
+SESSIONS_DIR="$PROJECT_DIR/$(llm_sessions_dir "$PROJECT_DIR")"
 KEEP_MAX=10                        # hard cap - never more than 10 session files
 KEEP="${CLAUDE_SESSIONS_KEEP:-$KEEP_MAX}"
 case "$KEEP" in

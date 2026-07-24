@@ -1,6 +1,6 @@
 #!/bin/bash
 # Claude Code Stop hook: auto-continues the agent through the active plan
-# file(s) registered in plans/.active-plan (checkboxes tracked in the plan
+# file(s) registered in <plans>/.active-plan (checkboxes tracked in the plan
 # file itself, one step per turn), then requires the final verification
 # (infra-llm --verify) before the session may stop.
 cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
@@ -11,7 +11,7 @@ STATUS=$(bash "$(dirname "$0")/steps-status.sh")
 
 COUNT=$(bash "$(dirname "$0")/steps-guard.sh" claude)
 if [ "${COUNT:-0}" -gt 3 ]; then
-  printf '{"systemMessage":"Step-plan hook: no progress after 3 auto-continues; allowing stop. The active plan in plans/.active-plan is still unfinished."}'
+  printf '{"systemMessage":"Step-plan hook: no progress after 3 auto-continues; allowing stop. The active plan is still unfinished."}'
   exit 0
 fi
 
@@ -26,7 +26,7 @@ case "$STATUS" in
     printf '{"decision":"block","reason":"Plan %s has %s unchecked step(s). Continue with the next one: %s. Implement ONLY that single step (token budgeting), mark it - [x] in %s when finished, then stop — this hook advances you step by step so nothing is missed."}' "$file" "$n" "$next" "$file"
     ;;
   NEEDS_VERIFY*)
-    printf '{"decision":"block","reason":"All steps in %s are checked. Now run: infra-llm --verify — fix any failures and re-run until it prints VERIFY OK — on success it clears plans/.active-plan so the session can end."}' "$file"
+    printf '{"decision":"block","reason":"All steps in %s are checked. Now run: infra-llm --verify — fix any failures and re-run until it prints VERIFY OK — on success it clears the active-plan marker so the session can end."}' "$file"
     ;;
 esac
 exit 0

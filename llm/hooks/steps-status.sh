@@ -1,7 +1,7 @@
 #!/bin/bash
 # Shared step-plan status for agent stop hooks (Claude, Codex).
-# Active plan files are listed one per line in plans/.active-plan —
-# registered by plan-prompt.sh when a prompt references a plans/*.md file,
+# Active plan files are listed one per line in <plans>/.active-plan —
+# registered by plan-prompt.sh when a prompt references a plan file,
 # or by the agent itself for ad-hoc tasks. Progress is tracked with
 # - [ ] / - [x] checkboxes directly inside each plan file (no separate
 # progress file). Prints exactly one line:
@@ -9,7 +9,8 @@
 #   UNPLANNED|<file>                   active plan has no checkboxes yet
 #   REMAINING|<file>|<n>|<next step>   first plan with unchecked steps
 #   NEEDS_VERIFY|<file>                all steps checked, verify not yet run
-ACTIVE="plans/.active-plan"
+. "$(dirname "$0")/state-dirs.sh"
+ACTIVE="$(llm_plans_dir)/.active-plan"
 
 if [ ! -f "$ACTIVE" ]; then
   echo "NO_PLAN"

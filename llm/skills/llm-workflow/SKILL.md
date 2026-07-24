@@ -14,7 +14,7 @@ hook here and every wired repo picks it up on its next run.
 ## Wire up the current repo
 
 ```bash
-infra-llm --init         # alias: llminit
+infra-llm --agent        # alias: llmagent
 ```
 
 It detects the repo's LLM setups, pre-checks what it finds, then installs the
@@ -68,8 +68,8 @@ In Claude Code the same commands are one generated slash command,
 sourced `git.sh` before that command existed; re-source it.
 
 `infra-llm --skill step-plan` is the protocol itself. To strip a repo's own
-duplicate workflow, copy the infra checkout's `plans/adopt-infra-llm.md` into
-that repo's `plans/` and have its agent work through it.
+duplicate workflow, copy the infra checkout's `adopt-infra-llm.md` plan into
+that repo's `infra-llm/plans/` and have its agent work through it.
 
 Releases follow `vMAJOR.MINOR.PATCH`: `v1.0.1` bug fix, `v1.1.0` feature,
 `v2.0.0` breaking.

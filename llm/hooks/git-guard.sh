@@ -16,7 +16,7 @@
 #   GIT_GUARD_ALLOW="tag stash"   # subcommands to let through in this repo
 #
 # `infra-llm --pull-request` / `--create-release` open a time-boxed window
-# (plans/.git-window) in which commit/push/tag/branch are allowed without any
+# (<plans>/.git-window) in which commit/push/tag/branch are allowed without any
 # config change, because asking for a PR or a release is asking for those.
 #
 # GIT_GUARD / GIT_GUARD_ALLOW in the environment win over the file, so a repo
@@ -70,7 +70,8 @@ esac
 # no config to edit, nothing to revert afterwards, and no argument with the
 # guard mid-flow. Everyday git writes outside the window stay denied, and the
 # destructive set below stays denied even inside it.
-window="$proj/plans/.git-window"
+. "$(dirname "$0")/state-dirs.sh"
+window="$proj/$(llm_plans_dir "$proj")/.git-window"
 window_open=0
 window_why=""
 if [ -f "$window" ]; then
